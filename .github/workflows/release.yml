@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            platform: windows
+            arch: x64
+          - runner: macos-15
+            platform: macos
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Verify version tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF_NAME#v}" = "$(node -p "require('./package.json').version")"
+      - name: Verify native runner architecture
+        run: node -e "if(process.arch !== '${{ matrix.arch }}') throw new Error('Unexpected runner architecture')"
+      - run: npm ci --omit=optional
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm run setup:desktop
+      - name: Install WebView2 Runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $client = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $paths = @(
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$client",
+            "HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$client"
+          )
+          function Get-WebView2Version {
+            $paths |
+              ForEach-Object { Get-ItemPropertyValue -LiteralPath $_ -Name 'pv' -ErrorAction SilentlyContinue } |
+              Where-Object { $_ -and $_ -ne '0.0.0.0' } |
+              Select-Object -First 1
+          }
+          $version = Get-WebView2Version
+          if (-not $version) {
+            $installer = Join-Path $env:RUNNER_TEMP 'MicrosoftEdgeWebview2Setup.exe'
+            Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $installer
+            $process = Start-Process -FilePath $installer -ArgumentList '/silent', '/install' -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "WebView2 Runtime installer failed with exit code $($process.ExitCode)" }
+            $version = Get-WebView2Version
+          }
+          if (-not $version) { throw 'WebView2 Runtime installation could not be verified.' }
+          Write-Output "WebView2 Runtime $version"
+      - name: Windows release verification and package
+        if: runner.os == 'Windows'
+        run: npm run verify:installer
+      - name: macOS release verification and package
+        if: runner.os == 'macOS'
+        run: npm test && npm run build && npm run test:rust && npm run package && node scripts/checksums.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-desk-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.ref_name }}
+          path: |
+            release/CLI-Desk-*-Setup.exe
+            release/CLI-Desk-*.dmg
+            release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cli-desk-*
+          path: release-assets
+      - name: Collect checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          find release-assets -type f -name SHA256SUMS.txt -exec cat {} + > SHA256SUMS.txt
+          test -s SHA256SUMS.txt
+      - name: Publish direct-download release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          windows_installer="$(find release-assets -type f -name 'CLI-Desk-*-Windows-x64-Setup.exe' -print -quit)"
+          macos_installer="$(find release-assets -type f -name 'CLI-Desk-*.dmg' -print -quit)"
+          test -n "$windows_installer"
+          test -n "$macos_installer"
+          assets=("$windows_installer" "$macos_installer" SHA256SUMS.txt)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --title "CLI Desk ${GITHUB_REF_NAME#v}" --generate-notes
+          fi

@@ -1,7 +1,9 @@
-name: Build installers
+name: Verify desktop builds
 
 on:
   push:
+    branches:
+      - '**'
   pull_request:
   workflow_dispatch:
 
@@ -9,11 +11,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: installers-${{ github.ref }}
+  group: desktop-checks-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  package:
+  verify:
     strategy:
       fail-fast: false
       matrix:
@@ -72,19 +74,10 @@ jobs:
           Write-Output "WebView2 Runtime $version"
       - name: Windows full verification
         if: runner.os == 'Windows'
-        run: npm run verify:installer
+        run: npm test && npm run build && npm run test:rust && node scripts/tauri.mjs build --debug --no-bundle --config src-tauri/tauri.test.conf.json && npm run test:ui && npm run test:packaged
       - name: macOS build verification (native UI acceptance remains manual)
         if: runner.os == 'macOS'
-        run: npm test && npm run build && npm run test:rust && npm run package && node scripts/checksums.mjs
-      - uses: actions/upload-artifact@v4
-        with:
-          name: cli-desk-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}
-          path: |
-            release/CLI-Desk-*-Setup.exe
-            release/CLI-Desk-*.dmg
-            release/SHA256SUMS.txt
-          if-no-files-found: error
-          retention-days: 14
+        run: npm test && npm run build && npm run test:rust
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -93,37 +86,4 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  publish-release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: package
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: cli-desk-*
-          path: release-assets
-      - name: Collect installers and checksums
-        shell: bash
-        run: |
-          set -euo pipefail
-          windows_installer="$(find release-assets -type f -name 'CLI-Desk-*-Windows-x64-Setup.exe' -print -quit)"
-          macos_installer="$(find release-assets -type f -name 'CLI-Desk-*.dmg' -print -quit)"
-          test -n "$windows_installer"
-          test -n "$macos_installer"
-          find release-assets -type f -name SHA256SUMS.txt -exec cat {} + > SHA256SUMS.txt
-          cp "$windows_installer" CLI-Desk-Windows-x64-Setup.exe
-          cp "$macos_installer" CLI-Desk-macOS-arm64.dmg
-      - name: Publish direct-download release assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          assets=(CLI-Desk-Windows-x64-Setup.exe CLI-Desk-macOS-arm64.dmg SHA256SUMS.txt)
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --title "CLI Desk ${GITHUB_REF_NAME#v}" --generate-notes
           fi
