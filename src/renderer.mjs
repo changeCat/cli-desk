@@ -69,12 +69,13 @@ async function deleteSession(id) {
   if (!id) return;
   const target = state.sessions.find(s => s.id === id); if (!target) return;
   if (!(await confirmAction({title:'归档这个对话？',message:`“${target.title}”将从左侧列表移到本地归档。`,detail:'对话内容、草稿和续聊信息都会保留，可随时在设置中恢复。项目文件和 Claude 原始会话不会删除。',accept:'归档对话'}))) return;
-  if (current?.id === id) await flushDraft();
+  const wasCurrent = current?.id === id;
+  if (wasCurrent) await flushDraft();
   if (!(await api.delete(id))) return;
   toast('已归档到本地，可在设置中恢复');
   drafts.delete(id);
   state.sessions = state.sessions.filter(s => s.id !== id);
-  if (current?.id === id) {
+  if (wasCurrent) {
     clearTimeout(draftTimer); current = null; $('#prompt').value = ''; $('#messages').replaceChildren(); approvalsSignature = '';
     if (state.sessions.length) await select(state.sessions[0].id); else render();
   }
@@ -308,7 +309,13 @@ document.addEventListener('click', event => { const anchor = event.target.closes
 document.addEventListener('keydown', event => { if (event.ctrlKey && event.key.toLowerCase() === 'n' && !document.querySelector('dialog[open]')) { event.preventDefault(); attempt(newDialog); } });
 window.addEventListener('blur', () => attempt(flushDraft));
 api.onEvent(({type,data}) => {
-  if (type === 'list') { state.sessions = data; list(); }
+  if (type === 'list') {
+    state.sessions = data;
+    if (current && !state.sessions.some(session => session.id === current.id)) {
+      clearTimeout(draftTimer); current = null; $('#prompt').value = ''; $('#messages').replaceChildren(); approvalsSignature = '';
+    }
+    list(); render();
+  }
   if (type === 'session' && data.id === current?.id) { current = data; render(); }
   if (type === 'approvals') { state.approvals = data; approvals(); }
   if (type === 'error') toast(data);
