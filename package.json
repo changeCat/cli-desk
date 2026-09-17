@@ -1,0 +1,35 @@
+{
+  "name": "cli-desk-local",
+  "version": "1.0.0",
+  "description": "A desktop interface for local AI coding CLIs on Windows and macOS",
+  "author": "CLI Desk contributors",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "node scripts/tauri.mjs dev",
+    "test": "node --test test/*.test.mjs",
+    "test:rust": "node scripts/tauri.mjs test",
+    "test:ui": "node test/ui.mjs",
+    "package": "node scripts/package.mjs",
+    "test:packaged": "node scripts/tauri.mjs build --no-bundle --config src-tauri/tauri.test.conf.json && node test/packaged.mjs",
+    "verify:installer": "npm test && npm run build && npm run test:rust && node scripts/tauri.mjs build --debug --no-bundle --config src-tauri/tauri.test.conf.json && npm run test:ui && npm run package && npm run test:packaged && node scripts/checksums.mjs",
+    "icons": "tauri icon build/icon.svg --output build",
+    "setup:desktop": "node scripts/setup-desktop.mjs"
+  },
+  "devDependencies": {
+    "dompurify": "^3.4.15",
+    "esbuild": "^0.28.2",
+    "marked": "^18.0.13",
+    "playwright": "^1.63.0",
+    "@tauri-apps/cli": "^2.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.273",
+    "@tauri-apps/api": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

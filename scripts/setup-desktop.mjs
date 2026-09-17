@@ -1,0 +1,11 @@
+import {createRequire} from 'node:module';
+import {spawnSync} from 'node:child_process';
+const require=createRequire(import.meta.url);
+const pkg=require('@tauri-apps/cli/package.json');
+const suffix={win32:'win32-x64-msvc',darwin:'darwin-'+process.arch}[process.platform];
+if(!suffix || (process.platform==='win32'&&process.arch!=='x64'))throw new Error('Use Windows x64 or macOS for desktop development.');
+const name='@tauri-apps/cli-'+suffix;
+const npm=process.env.npm_execpath;
+if(!npm)throw new Error('Run this script with npm run setup:desktop.');
+const result=spawnSync(process.execPath,[npm,'install','--no-save','--package-lock=false','--omit=optional',name+'@'+pkg.version],{stdio:'inherit'});
+if(result.error)throw result.error;process.exit(result.status??1);

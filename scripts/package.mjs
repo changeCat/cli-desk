@@ -1,0 +1,17 @@
+import {spawnSync} from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+if(!['win32','darwin'].includes(process.platform))throw new Error('Installers require Windows or macOS.');
+if(process.platform==='darwin'&&process.arch!=='arm64')throw new Error('Build and test this DMG on Apple Silicon.');
+const target=process.platform==='win32'?'nsis':'dmg';
+const result=spawnSync(process.execPath,['scripts/tauri.mjs','build','--bundles',target],{stdio:'inherit',env:process.env});
+if(result.status!==0)process.exit(result.status??1);
+const {version}=JSON.parse(fs.readFileSync('package.json','utf8'));
+const source=path.join('src-tauri/target/release/bundle',target);
+const extension=target==='nsis'?'.exe':'.dmg';
+const file=fs.readdirSync(source).find(name=>name.endsWith(extension)&&name.includes(version));
+if(!file)throw new Error('Installer not found.');
+fs.mkdirSync('release',{recursive:true});
+const name='CLI-Desk-'+version+'-'+(target==='nsis'?'Windows-x64-Setup.exe':'macOS-arm64.dmg');
+fs.copyFileSync(path.join(source,file),path.join('release',name));
+console.log('Installer: '+name+' ('+(fs.statSync(path.join('release',name)).size/1048576).toFixed(2)+' MiB; private Node runtime and system WebView)');

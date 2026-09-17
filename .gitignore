@@ -1,0 +1,45 @@
+node_modules/
+dist/
+release/
+test-artifacts/
+source-package/
+coverage/
+.cache/
+*.log
+*.exe
+*.msi
+*.dmg
+*.zip
+*.sha256
+SHA256SUMS.txt
+
+# Local settings, credentials, and application profiles
+.env
+.env.*
+!.env.example
+.npmrc
+.claude/
+.codex/
+profiles/
+sessions/
+trash/
+archive/
+*.sqlite
+*.sqlite-*
+*.db
+*.bak
+
+# Editors and operating system metadata
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local delivery and scratch folders
+outputs/
+work/
+
+# Tauri build artifacts
+src-tauri/target/
+src-tauri/gen/
