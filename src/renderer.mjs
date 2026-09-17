@@ -6,7 +6,7 @@ const $ = selector => document.querySelector(selector);
 let state = { sessions:[], settings:{}, approvals:[] }, current = null, approvalsSignature = '', sending = false, composing = false;
 const drafts = new Map(); let draftTimer, toastTimer;
 let menuSessionId = null, editingSessionId = null, selectionRequest = 0;
-let confirmResolver = null, archiveReturnToSettings = false;
+let confirmResolver = null, archiveReturnToSettings = false, sendAfterCreate = false;
 const statusNames = { idle:'就绪', running:'正在处理', waiting:'等待确认', stopping:'正在停止', error:'请求失败', interrupted:'已停止' };
 const busy = s => s && ['running','waiting','stopping'].includes(s.status);
 function el(tag, className, value) { const node = document.createElement(tag); if (className) node.className = className; if (value !== undefined) node.textContent = value; return node; }
@@ -162,13 +162,15 @@ function render() {
   $('#title').textContent = current?.title || '开始一段新对话';
   $('#workspace').textContent = current?.cwd || '选择文件夹，让 Claude 了解你的项目'; $('#workspace').title = current?.cwd || '';
   $('#welcome').hidden = !!current?.messages.length;
-  $('#welcome-new').textContent = current ? '开始输入你的需求 ↓' : '新建我的第一个对话 ↗';
-  $('#prompt').disabled = !current;
+  $('#welcome-new').textContent = current ? '开始输入你的需求 ↓' : '设置工作文件夹与模型 ↗';
+  $('#prompt').disabled = false;
   const running = active || sending;
-  $('#send').disabled = !current || running || !$('#prompt').value.trim();
-  $('#send').textContent = running ? '运行中…' : '发送 ↑'; $('#send').classList.toggle('running',running);
-  $('#stop').hidden = !active; $('#stop').disabled = current?.status === 'stopping';
-  $('#composer-hint').textContent = current?.activity || (active ? current.status === 'waiting' ? '等待你的确认后继续' : 'Claude 正在处理，你可以先编辑下一条消息' : current ? '在当前工作文件夹中继续对话' : '先新建一个对话');
+  $('#send').disabled = active ? current.status === 'stopping' : sending || !$('#prompt').value.trim();
+  $('#send').textContent = active ? current.status === 'stopping' ? '正在停止…' : '■ 运行中…' : sending ? '正在发送…' : '发送 ↑';
+  $('#send').classList.toggle('running',running);
+  $('#send').title = active && current.status !== 'stopping' ? '点击停止当前回答' : '';
+  $('#send').setAttribute('aria-label',active && current.status !== 'stopping' ? '停止当前回答' : '发送消息');
+  $('#composer-hint').textContent = current?.activity || (active ? current.status === 'waiting' ? '等待你的确认后继续' : 'Claude 正在处理，你可以先编辑下一条消息' : current ? '在当前工作文件夹中继续对话' : state.settings.defaultCwd ? '发送后将按默认设置创建对话' : '输入需求，发送时选择工作文件夹');
   $('#usage').textContent = current?.usage?.duration ? `本次 ${(current.usage.duration/1000).toFixed(1)} 秒` : '';
   $('#send-key-hint').textContent = state.settings.sendKey === 'shift-enter' ? 'Shift + Enter 发送 · Enter 换行' : 'Enter 发送 · Shift + Enter 换行';
   renderMessages(); approvals();
@@ -227,11 +229,22 @@ async function check(path) {
   finally { $('#check-cli').disabled = false; }
 }
 async function sendMessage() {
-  if (!current || busy(current) || sending) return;
+  if (busy(current) || sending) return;
   const prompt = $('#prompt').value; if (!prompt.trim()) return;
   sending = true; clearTimeout(draftTimer); render();
-  const id = current.id;
   try {
+    if (!current) {
+      if (!state.settings.defaultCwd) {
+        sendAfterCreate = true;
+        newDialog();
+        $('#new-error').textContent = '请选择工作文件夹；当前输入内容会保留。';
+        return;
+      }
+      const created = await api.create({cwd:state.settings.defaultCwd,model:state.settings.model || ''}), {messages,draft,...summary} = created;
+      state.sessions = [summary,...state.sessions.filter(s => s.id !== summary.id)];
+      current = created; $('#messages').replaceChildren(); approvalsSignature = ''; list();
+    }
+    const id = current.id;
     const result = await api.send({id,prompt}); drafts.delete(id);
     if (current?.id === id) { current = result; $('#prompt').value = ''; }
   } catch (e) { toast(e.message); }
@@ -249,7 +262,7 @@ for (const button of document.querySelectorAll('.close-dialog')) button.onclick 
 $('#pick-new').onclick = () => attempt(async () => { const p = await api.folder(); if (p) $('#new-cwd').value = p; });
 $('#pick-default').onclick = () => attempt(async () => { const p = await api.folder(); if (p) $('#default-cwd').value = p; });
 $('#pick-cli').onclick = () => attempt(async () => { const p = await api.cli(); if (p) $('#cli-path').value = p; });
-$('#new-form').onsubmit = async event => { event.preventDefault(); const button = event.submitter; button.disabled = true; try { const s = await api.create({cwd:$('#new-cwd').value,model:$('#new-model').value}); $('#new-dialog').close(); await select(s.id); } catch (e) { $('#new-error').textContent = e.message; } finally { button.disabled = false; } };
+$('#new-form').onsubmit = async event => { event.preventDefault(); const button = event.submitter, shouldSend = sendAfterCreate, pending = current ? '' : $('#prompt').value; button.disabled = true; try { const s = await api.create({cwd:$('#new-cwd').value,model:$('#new-model').value}); sendAfterCreate = false; $('#new-dialog').close(); await select(s.id); if (pending) { $('#prompt').value = pending; drafts.set(s.id,pending); render(); } if (shouldSend) await sendMessage(); } catch (e) { $('#new-error').textContent = e.message; } finally { button.disabled = false; } };
 $('#settings-form').onsubmit = async event => { event.preventDefault(); try { state.settings = await api.settings({cliPath:$('#cli-path').value,defaultCwd:$('#default-cwd').value,model:$('#model').value,sendKey:$('#send-key').value}); $('#settings-dialog').close(); render(); await check(state.settings.cliPath); toast('设置已保存'); } catch(e) { $('#settings-error').textContent = e.message; } };
 $('#check-cli').onclick = () => check($('#cli-path').value);
 $('#open-data').onclick = () => attempt(() => api.data());
@@ -275,8 +288,7 @@ document.addEventListener('keydown', event => {
 });
 $('#sessions').addEventListener('scroll', () => closeSessionMenu());
 window.addEventListener('resize', () => closeSessionMenu());
-$('#send').onclick = sendMessage;
-$('#stop').onclick = () => attempt(() => api.stop(current.id));
+$('#send').onclick = () => busy(current) ? attempt(() => api.stop(current.id)) : sendMessage();
 $('#prompt').addEventListener('compositionstart', () => composing = true);
 $('#prompt').addEventListener('compositionend', () => { setTimeout(() => composing = false,0); });
 $('#prompt').addEventListener('keydown', event => {
@@ -286,8 +298,10 @@ $('#prompt').addEventListener('keydown', event => {
   }
 });
 $('#prompt').oninput = () => {
-  if (!current) return; drafts.set(current.id,$('#prompt').value); clearTimeout(draftTimer); draftTimer = setTimeout(() => attempt(flushDraft),350); render();
+  if (current) { drafts.set(current.id,$('#prompt').value); clearTimeout(draftTimer); draftTimer = setTimeout(() => attempt(flushDraft),350); }
+  render();
 };
+$('#new-dialog').addEventListener('close', () => sendAfterCreate = false);
 $('#feed').onscroll = () => $('#scroll-bottom').hidden = $('#feed').scrollHeight - $('#feed').scrollTop - $('#feed').clientHeight < 120;
 $('#scroll-bottom').onclick = () => { $('#feed').scrollTop = $('#feed').scrollHeight; };
 document.addEventListener('click', event => { const anchor = event.target.closest('a'); if (anchor) { event.preventDefault(); attempt(() => api.link(anchor.href)); } });

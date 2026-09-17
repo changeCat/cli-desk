@@ -12,15 +12,23 @@ export async function launchDesktop({data, packaged = false, fixture = !packaged
   const executable=customExecutable || path.resolve(`src-tauri/target/${packaged?'release':'debug'}/cli-desk.exe`);
   if(!fs.existsSync(executable))throw new Error('Build the Tauri executable before running UI tests.');
   const child=spawn(executable,['--profile-dir='+data,...(fixture?['--smoke-test']:[])],{
-    env:{...process.env,WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:`--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1`},windowsHide:true,stdio:'pipe'
+    env:{...process.env,CLI_DESK_CDP_PORT:String(port)},windowsHide:true,stdio:'pipe'
   });
   let output='';child.stderr.on('data',b=>output+=b);child.stdout.on('data',b=>output+=b);
   let browser;
   try {
-    for(let i=0;i<300;i++) {
+    const deadline=Date.now()+90_000;
+    let cdpReady=false;
+    while(Date.now()<deadline) {
       if(child.exitCode!==null)throw new Error('Desktop exited: '+child.exitCode+' '+output);
-      try {const result=await fetch(`http://127.0.0.1:${port}/json/version`);if(result.ok)break;}catch{}
+      try {
+        const result=await fetch(`http://127.0.0.1:${port}/json/version`);
+        if(result.ok) {cdpReady=true;break;}
+      } catch {}
       await new Promise(r=>setTimeout(r,100));
+    }
+    if(!cdpReady) {
+      throw new Error(`WebView2 CDP endpoint did not start within 90 seconds. Verify that the WebView2 Runtime is installed. Desktop output: ${output || '(none)'}`);
     }
     browser=await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
     const context=browser.contexts()[0];let page=context.pages()[0];

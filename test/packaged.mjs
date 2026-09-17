@@ -24,7 +24,7 @@ try {
   await page.click('#settings-button');
   assert.match(await page.locator('#node-info').innerText(),/^应用内置 Node v24\.14\.1$/);
   await page.click('#settings-dialog .close-dialog');
-  await page.click('#new-chat');await page.click('#new-form button[type=submit]');await page.waitForFunction(()=>!document.querySelector('#prompt').disabled);
+  await page.click('#new-chat');await page.click('#new-form button[type=submit]');await page.waitForSelector('#new-dialog',{state:'hidden'});await page.waitForSelector('.session.selected');
   await page.fill('#prompt','测试安装版调用本地 CLI');await page.click('#send');await page.waitForSelector('.approval',{timeout:20000});await page.click('.approval .primary');
   await page.waitForFunction(()=>!document.querySelector('.session.selected')?.classList.contains('busy'));
   assert.ok((await page.locator('#messages').innerText()).includes('真实 SDK 协议测试'));

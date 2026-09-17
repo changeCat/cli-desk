@@ -40,6 +40,36 @@ jobs:
         with:
           workspaces: src-tauri
       - run: npm run setup:desktop
+      - name: Install WebView2 Runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $client = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $paths = @(
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$client",
+            "HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$client"
+          )
+          function Get-WebView2Version {
+            $paths |
+              ForEach-Object { Get-ItemPropertyValue -LiteralPath $_ -Name 'pv' -ErrorAction SilentlyContinue } |
+              Where-Object { $_ -and $_ -ne '0.0.0.0' } |
+              Select-Object -First 1
+          }
+
+          $version = Get-WebView2Version
+          if (-not $version) {
+            $installer = Join-Path $env:RUNNER_TEMP 'MicrosoftEdgeWebview2Setup.exe'
+            Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $installer
+            $process = Start-Process -FilePath $installer -ArgumentList '/silent', '/install' -Wait -PassThru
+            if ($process.ExitCode -ne 0) {
+              throw "WebView2 Runtime installer failed with exit code $($process.ExitCode)"
+            }
+            $version = Get-WebView2Version
+          }
+          if (-not $version) {
+            throw 'WebView2 Runtime installation could not be verified.'
+          }
+          Write-Output "WebView2 Runtime $version"
       - name: Windows full verification
         if: runner.os == 'Windows'
         run: npm run verify:installer

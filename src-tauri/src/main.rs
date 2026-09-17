@@ -252,8 +252,15 @@ fn main() {
                 resources.join("backend/worker.mjs")
             };
             let fixture = cfg!(debug_assertions) && args.iter().any(|s| s == "--smoke-test");
-            tauri::WebviewWindowBuilder::from_config(app, &app.config().app.windows[0])?
-                .data_directory(root.join("webview"))
+            let webview =
+                tauri::WebviewWindowBuilder::from_config(app, &app.config().app.windows[0])?
+                    .data_directory(root.join("webview"));
+            #[cfg(target_os = "windows")]
+            let webview = match cdp_browser_args() {
+                Some(args) => webview.additional_browser_args(&args),
+                None => webview,
+            };
+            webview
                 .on_navigation(local_url)
                 .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
                 .build()?;
@@ -346,6 +353,18 @@ fn main() {
         tauri::RunEvent::Reopen { .. } => show(app),
         _ => {}
     });
+}
+
+#[cfg(target_os = "windows")]
+fn cdp_browser_args() -> Option<String> {
+    let port = std::env::var("CLI_DESK_CDP_PORT")
+        .ok()?
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)?;
+    Some(format!(
+        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port={port}"
+    ))
 }
 
 fn local_url(url: &tauri::Url) -> bool {
