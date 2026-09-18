@@ -3,12 +3,12 @@
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>CLI Desk</title><link rel="stylesheet" href="style.css"></head>
 <body>
   <aside class="sidebar">
-    <div class="brand"><img class="brand-mark" src="icon.svg" alt=""><div class="brand-copy"><div class="brand-title">CLI Desk <span id="version" class="brand-version" aria-label="应用版本"></span></div><small>你的本地 AI 工作伙伴</small></div></div>
-    <button id="new-chat" class="new-chat"><span>＋</span> 新建对话 <kbd>Ctrl N</kbd></button>
+    <div class="brand"><img class="brand-mark" src="icon.svg" alt=""><div class="brand-copy"><div class="brand-title">CLI Desk</div><small id="version" class="brand-version" aria-label="应用版本"></small></div></div>
+    <div class="new-chat-group"><button id="new-chat" class="new-chat"><span>＋</span> 新建对话 <kbd>Ctrl N</kbd></button><div class="local-label"><span class="tiny-dot"></span>记录保存在此电脑</div></div>
     <label class="search"><span>⌕</span><input id="search" aria-label="搜索对话" placeholder="搜索对话"></label>
     <div class="list-heading">对话记录 <span id="count">0</span></div>
     <nav id="sessions" aria-label="对话列表"></nav>
-    <div class="sidebar-bottom"><button id="settings-button" class="settings-button"><span>⚙</span> 设置与连接 <span id="connection-dot" class="dot"></span></button><div class="local-label"><span class="tiny-dot"></span>记录保存在此电脑</div></div>
+    <div class="sidebar-bottom"><button id="settings-button" class="settings-button"><span>⚙</span> 设置与连接 <span id="connection-dot" class="dot"></span></button></div>
   </aside>
   <main>
     <header><div class="heading"><h1 id="title">开始一段新对话</h1><button id="workspace" title="工作文件夹" disabled>选择文件夹，让 Claude 了解你的项目</button></div></header>
