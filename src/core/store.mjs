@@ -31,7 +31,8 @@ export class Store {
     this.root = root; this.warnings = []; this.sessions = new Map();
     fs.mkdirSync(path.join(root, 'sessions'), { recursive: true });
     this.settings = { cliPath: '', model: '', defaultCwd: '', sendKey: 'enter', ...readJson(path.join(root, 'settings.json'), {}, this.warnings) };
-    if (!['enter', 'shift-enter'].includes(this.settings.sendKey)) this.settings.sendKey = 'enter';
+    if (this.settings.sendKey === 'shift-enter') this.settings.sendKey = 'ctrl-enter';
+    if (!['enter', 'ctrl-enter'].includes(this.settings.sendKey)) this.settings.sendKey = 'enter';
     for (const name of fs.readdirSync(path.join(root, 'sessions')).filter(n => /^[\w-]+\.json$/.test(n))) {
       const session = readJson(path.join(root, 'sessions', name), null, this.warnings);
       if (!session || !Array.isArray(session.messages) || `${session.id}.json` !== name) continue;

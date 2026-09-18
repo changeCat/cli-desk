@@ -15,7 +15,7 @@ CLI Desk 1.0 uses Tauri 2 for its desktop shell, an app-private Node.js runtime 
 
 ## Security and lifecycle
 
-The frontend has no Node integration or general filesystem/shell/process permissions. Tauri capabilities only permit listening to events in the local main window. The command entrypoint checks window/origin. Navigation and new windows are blocked. Native confirmation precedes deletion and external-link opening; export uses a native save picker.
+The frontend has no Node integration or general filesystem/shell/process permissions. Tauri capabilities only permit listening to events in the local main window. The command entrypoint checks window/origin. Navigation and new windows are blocked. Native confirmation precedes deletion and external-link opening; export and attachment selection use native pickers. Dropped paths are size/count checked by the backend. Files already inside the working directory are referenced in place; external files are copied atomically to `.cli-desk/attachments/<session-id>/`. Sessions retain only attachment metadata and relative paths.
 
 The shell starts the bundled, absolute, version-checked Node executable without a command shell; NODE_OPTIONS and NODE_PATH are removed. Only the bundled backend is launched. Rust and Node validate requests independently. There is no local HTTP server. Closing parent stdin triggers bounded backend shutdown. Windows uses a kill-on-close Job Object for Node and its descendants; the SDK engine owns Claude process groups on macOS.
 

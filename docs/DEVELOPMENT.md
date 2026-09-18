@@ -19,4 +19,4 @@ The wrapper scripts/tauri.mjs uses project-local .cache/cargo and .cache/rustup 
 
 Use --profile-dir with an absolute temporary path for tests. --smoke-test is recognized only in debug binaries. Release binaries always call the real SDK and installed CLI. Screenshots stay in test-artifacts; do not commit real account details, chats or machine-specific fixture output.
 
-CI builds Windows x64 and macOS arm64 separately. The macOS job tests backend/Rust and packages the DMG; native Mac UI/installation acceptance remains manual. Windows installers are unsigned; Mac builds use ad-hoc signatures without notarization. Signing secrets do not belong in the repository.
+The single GitHub Actions workflow runs only for `v*` tags. It builds Windows x64 and macOS arm64, publishes the installers and checksums, then creates or updates the matching GitHub Release. The macOS job tests backend/Rust and packages the DMG; native Mac UI/installation acceptance remains manual. Windows installers are unsigned; Mac builds use ad-hoc signatures without notarization. Signing secrets do not belong in the repository.

@@ -1,8 +1,13 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 const callbacks = new Set();
-const ready = listen('desk:event', event => { for (const callback of callbacks) callback(event.payload); });
-const methods = ['state','get','create','rename','model','delete','archives','restore','purge','draft','send','stop','answer','folder','cli','settings','check','copy','export','data','openCwd','link'];
+const dispatch = value => { for (const callback of callbacks) callback(value); };
+const ready = Promise.all([
+  listen('desk:event', event => dispatch(event.payload)),
+  getCurrentWebview().onDragDropEvent(event => dispatch({type:'fileDrag',data:event.payload}))
+]);
+const methods = ['state','get','create','rename','model','delete','archives','restore','purge','draft','attach','send','stop','answer','folder','files','cli','settings','check','copy','export','data','openCwd','reveal','link','updateCheck'];
 export const desk = Object.fromEntries(methods.map(method => [method, async payload => {
   await ready;
   try { return await invoke('desk_request', {method,payload:payload ?? null}); }

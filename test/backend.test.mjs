@@ -11,11 +11,13 @@ test('backend allowlist, settings validation and isolation',async()=>{
   const dir=fs.mkdtempSync(path.join(root,'backend-'));
   const service=createService({root:dir,version:'fixture',smoke:true,emit:()=>{}});
   const s=await service.request('create',{cwd:dir,model:'claude-test-model'});assert.equal(s.model,'claude-test-model');
+  const outside=fs.mkdtempSync(path.join(root,'outside-')), source=path.join(outside,'参考图.png');fs.writeFileSync(source,'fixture');
+  const [attachment]=await service.request('attach',{id:s.id,paths:[source]});assert.equal(attachment.copied,true);assert.equal(attachment.name,'参考图.png');assert.ok(fs.existsSync(path.join(dir,attachment.relativePath)));
   const changed=await service.request('model',{id:s.id,model:'claude-updated-model'});assert.equal(changed.model,'claude-updated-model');
   assert.equal((await service.request('get',s.id)).model,'claude-updated-model');
   await assert.rejects(()=>service.request('__proto__'),/不支持/);
   await assert.rejects(()=>service.request('settings',{cliPath:'',model:'',defaultCwd:'',sendKey:'invalid'}),/发送按键/);
-  await service.request('settings',{cliPath:'',model:'',defaultCwd:dir,sendKey:'enter'});
+  assert.equal((await service.request('settings',{cliPath:'',model:'',defaultCwd:dir,sendKey:'ctrl-enter'})).sendKey,'ctrl-enter');
   await service.request('draft',{id:s.id,draft:'草稿'});
   assert.equal((await service.request('get',s.id)).draft,'草稿');
   const exported=await service.request('export',s.id);assert.ok(exported.body.includes(dir));
@@ -23,6 +25,13 @@ test('backend allowlist, settings validation and isolation',async()=>{
   const archived=await service.request('archives');assert.equal(archived.length,1);assert.equal(archived[0].hasDraft,true);
   await service.request('restore',archived[0].key);assert.equal((await service.request('state')).sessions.length,1);
   await service.request('delete',s.id);const key=(await service.request('archives'))[0].key;await service.request('purge',key);assert.equal((await service.request('archives')).length,0);
+  await service.shutdown();
+});
+test('update check compares the latest GitHub release and returns its download page',async()=>{
+  const dir=fs.mkdtempSync(path.join(root,'updates-'));
+  const fetcher=async()=>({ok:true,json:async()=>({tag_name:'v1.2.0',html_url:'https://github.com/changeCat/cli-desk/releases/tag/v1.2.0'})});
+  const service=createService({root:dir,version:'1.0.2',emit:()=>{},fetcher});
+  const result=await service.request('updateCheck');assert.equal(result.available,true);assert.equal(result.version,'1.2.0');assert.match(result.url,/releases\/tag\/v1\.2\.0$/);
   await service.shutdown();
 });
 test('private stdio carries requests/events and closes active work on parent EOF', {timeout:15000},async()=>{

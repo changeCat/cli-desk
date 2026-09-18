@@ -8,20 +8,22 @@ export class Engine {
     this.runs = new Map(); this.approvals = new Map();
   }
   publish(s, persist = true) { if (persist) this.store.save(s); this.emit('session', s); }
-  start(id, text) {
+  start(id, text, attachments = []) {
     const s = this.store.get(id);
     if (this.runs.has(id)) throw new Error('此对话正在运行，请等待完成或停止任务。');
     if (this.runs.size >= 3) throw new Error('最多同时运行 3 个对话，请先等待其他任务完成。');
-    if (typeof text !== 'string' || !text.trim() || text.length > 100000) throw new Error('请输入消息（最多 100,000 字符）。');
+    if (typeof text !== 'string' || (!text.trim() && !attachments.length) || text.length > 100000) throw new Error('请输入消息或添加附件（消息最多 100,000 字符）。');
     if (!fs.existsSync(s.cwd) || !fs.statSync(s.cwd).isDirectory()) throw new Error('工作文件夹不存在，请重新选择或新建对话。');
     const cli = this.resolver(this.store.settings.cliPath);
     const run = { controller: new AbortController(), child: null, stopped: false, query: null, dirty: false, streamId: null, tools: new Map(), textIds: new Map(), finished: false };
     this.runs.set(id, run);
     s.status = 'running'; s.updatedAt = Date.now(); s.draft = '';
-    if (!s.messages.some(m => m.role === 'user')) s.title = text.trim().slice(0, 30);
-    s.messages.push({ id: randomUUID(), role: 'user', text: text.trim(), at: Date.now() });
+    const userText = text.trim() || '请查看并处理附件。';
+    if (!s.messages.some(m => m.role === 'user')) s.title = userText.slice(0, 30);
+    s.messages.push({ id: randomUUID(), role: 'user', text: userText, attachments, at: Date.now() });
     try { this.publish(s); } catch (error) { this.runs.delete(id); s.status = 'error'; throw error; }
-    run.done = this.execute(s, text.trim(), cli, run);
+    const attachmentPrompt = attachments.length ? `\n\n附件已放在当前工作目录中。请按要求读取或修改；修改会直接保存到这些路径：\n${attachments.map(item => `- ${item.relativePath}`).join('\n')}` : '';
+    run.done = this.execute(s, userText + attachmentPrompt, cli, run);
     return s;
   }
   notice(s, text) { s.messages.push({ id: randomUUID(), role: 'notice', text, at: Date.now() }); }

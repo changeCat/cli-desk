@@ -4,9 +4,12 @@ import { desk as api } from './desktop.mjs';
 
 const $ = selector => document.querySelector(selector);
 let state = { sessions:[], settings:{}, approvals:[] }, current = null, approvalsSignature = '', sending = false, composing = false;
-const drafts = new Map(); let draftTimer, toastTimer;
+const drafts = new Map(), pendingAttachments = new Map(); let draftTimer, toastTimer;
+const openProcessTurns = new Set(), openTools = new Set();
 let menuSessionId = null, editingSessionId = null, selectionRequest = 0;
 let confirmResolver = null, archiveReturnToSettings = false, sendAfterCreate = false;
+let updateAvailable = null, updating = false;
+const latestReleaseUrl = 'https://github.com/changeCat/cli-desk/releases/latest';
 const statusNames = { idle:'就绪', running:'正在处理', waiting:'等待确认', stopping:'正在停止', error:'请求失败', interrupted:'已停止' };
 const busy = s => s && ['running','waiting','stopping'].includes(s.status);
 function el(tag, className, value) { const node = document.createElement(tag); if (className) node.className = className; if (value !== undefined) node.textContent = value; return node; }
@@ -99,34 +102,128 @@ async function select(id) {
 function markdown(value) {
   return DOMPurify.sanitize(marked.parse(value || '', { breaks:true, gfm:true }), { FORBID_TAGS:['img','svg','math','style','input','form','iframe','video','audio'], FORBID_ATTR:['style','id','name'], ALLOW_DATA_ATTR:false });
 }
+function localPathButton(value) {
+  const button=el('button','local-path'); button.type='button'; button.dataset.path=value; button.title='在文件管理器中显示';
+  button.append(el('span','local-path-value',value),el('span','local-path-icon','↗')); return button;
+}
+function enhanceLocalPaths(root) {
+  const exact=/^(?:[A-Za-z]:\\[^<>:"|?*\r\n]+|\\\\[^\\/:*?"<>|\r\n]+\\[^<>:"|?*\r\n]+|\/(?:Users|Volumes|private|tmp)\/[^\r\n]+)$/;
+  for (const code of [...root.querySelectorAll('code:not(pre code)')]) {
+    const value=code.textContent.trim();
+    const relative=!/(^|[\\/])\.\.([\\/]|$)/.test(value) && (/^[.\w\-一-鿿 ()]+[\\/][^<>:"|?*\r\n]+$/.test(value) || /^[^\\/:*?"<>|\r\n]+\.(?:json|md|txt|csv|ya?ml|toml|js|mjs|cjs|ts|tsx|jsx|html?|css|scss|less|py|rs|go|java|kt|swift|c|h|cpp|hpp|cs|sh|ps1|bat|cmd|sql|xml|svg|png|jpe?g|gif|webp|pdf|docx?|xlsx?|pptx?|zip)$/i.test(value));
+    if (exact.test(value) || relative) code.replaceWith(localPathButton(value));
+  }
+  const pattern=/(?:[A-Za-z]:\\|\\\\)[^\s<>"'`|?*]+/g, nodes=[];
+  const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,{acceptNode:node=>node.parentElement.closest('pre,a,button,code') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT});
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    const text=node.textContent; pattern.lastIndex=0; let match,last=0; const fragment=document.createDocumentFragment();
+    while ((match=pattern.exec(text))) {
+      let value=match[0].replace(/[),.;!?]+$/,''); if (!value) continue;
+      fragment.append(document.createTextNode(text.slice(last,match.index)),localPathButton(value)); last=match.index+value.length;
+    }
+    if (last) { fragment.append(document.createTextNode(text.slice(last))); node.replaceWith(fragment); }
+  }
+}
+function markdownBody(value, className = 'body') {
+  const body=el('div',className); body.innerHTML=markdown(value);
+  enhanceLocalPaths(body);
+  for (const pre of body.querySelectorAll('pre')) {
+    const button=el('button','copy','复制代码'), code=pre.textContent;
+    button.onclick=()=>attempt(async()=>{await api.copy(code);toast('代码已复制');}); pre.prepend(button);
+  }
+  return body;
+}
+function updateScrollButton() {
+  const feed=$('#feed'), distance=Math.max(0,feed.scrollHeight-feed.scrollTop-feed.clientHeight);
+  $('#scroll-bottom').hidden=distance<120;
+}
+function toolDetails(message) {
+  const details=el('details','tool'); details.open=openTools.has(message.id);
+  const summary=el('summary','',`◇ ${message.name}`); summary.append(el('span','tool-state',{running:'运行中',done:'已完成',error:'失败',interrupted:'已停止',unknown:'已结束'}[message.status]||''));
+  details.append(summary,el('pre','',JSON.stringify(message.input,null,2)+(message.text ? '\n\n'+message.text : '')));
+  details.ontoggle=()=>{details.open ? openTools.add(message.id) : openTools.delete(message.id);requestAnimationFrame(updateScrollButton);};
+  return details;
+}
+function messageLabel(role, at, copyText) {
+  const label=el('div','message-label');
+  label.append(el('span','avatar',role==='user' ? '◌' : '✳'),el('span','',role==='user' ? '你' : 'Claude'),el('time','',new Date(at).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})));
+  const copy=el('button','copy','复制'); copy.onclick=()=>attempt(async()=>{await api.copy(copyText);toast('已复制');}); label.append(copy); return label;
+}
 function renderMessages() {
   const container = $('#messages'), feed = $('#feed');
   const atEnd = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 90;
-  const nodes = new Map([...container.children].map(n => [n.dataset.messageId,n]));
-  for (const m of current?.messages || []) {
-    let node = nodes.get(m.id);
-    const signature = JSON.stringify(m); if (node?.dataset.signature === signature) continue;
-    if (!node) { node = el('article',`message ${m.role}`); node.dataset.messageId = m.id; container.append(node); }
-    node.dataset.signature = signature;
-    const wasOpen = node.querySelector('details')?.open;
-    node.replaceChildren();
-    if (m.role === 'notice') { node.textContent = m.text; continue; }
-    if (m.role === 'tool') {
-      const details = el('details','tool'); details.open = !!wasOpen;
-      const summary = el('summary','',`◇ ${m.name}`); summary.append(el('span','tool-state', {running:'运行中',done:'已完成',error:'失败',interrupted:'已停止',unknown:'已结束'}[m.status] || ''));
-      details.append(summary,el('pre','',JSON.stringify(m.input,null,2) + (m.text ? '\n\n' + m.text : ''))); node.append(details); continue;
+  const turns=[]; let turn=null;
+  for (const message of current?.messages || []) {
+    if (message.role==='user') { turn={id:message.id,user:message,items:[]}; turns.push(turn); }
+    else if (turn) turn.items.push(message);
+    else turns.push({id:message.id,user:null,items:[message]});
+  }
+  container.replaceChildren();
+  for (const item of turns) {
+    const wrapper=el('section','conversation-turn'); wrapper.dataset.turnId=item.id;
+    if (item.user) {
+      const question=el('article','message user turn-question'); question.dataset.messageId=item.user.id;
+      const questionLabel=messageLabel('user',item.user.at,item.user.text); questionLabel.classList.add('turn-label','user-label');
+      question.append(el('div','body',item.user.text));
+      if (item.user.attachments?.length) {
+        const files=el('div','message-attachments');
+        for (const file of item.user.attachments) {
+          const chip=localPathButton(file.relativePath); chip.classList.add('attachment-chip'); chip.querySelector('.local-path-value').textContent=`▱ ${file.name} · ${file.relativePath}`; files.append(chip);
+        }
+        question.append(files);
+      }
+      wrapper.append(questionLabel,question);
     }
-    const label = el('div','message-label'); label.append(el('span','avatar', m.role === 'user' ? '◌' : '✳'),el('span','',m.role === 'user' ? '你' : 'Claude'),el('time','',new Date(m.at).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})));
-    const copy = el('button','copy','复制'); copy.onclick = () => attempt(async () => { await api.copy(m.text); toast('已复制'); }); label.append(copy);
-    const body = el('div','body'); if (m.role === 'assistant') body.innerHTML = markdown(m.text); else body.textContent = m.text;
-    for (const pre of body.querySelectorAll('pre')) {
-      const button = el('button','copy','复制代码'); const code = pre.textContent;
-      button.onclick = () => attempt(async () => { await api.copy(code); toast('代码已复制'); }); pre.prepend(button);
+    if (item.items.length) {
+      const assistantText=item.items.filter(message=>message.role==='assistant').map(message=>message.text).join('\n\n');
+      const answer=el('article','message assistant turn-answer'); answer.dataset.messageId=item.items[0].id;
+      const answerLabel=messageLabel('assistant',item.items[0].at,assistantText || item.items.map(message=>message.text||message.name||'').join('\n')); answerLabel.classList.add('turn-label','answer-label');
+      const lastTool=item.items.reduce((last,message,index)=>message.role==='tool' ? index : last,-1);
+      if (lastTool>=0) {
+        const process=el('details','execution-process'); process.open=openProcessTurns.has(item.id);
+        const toolCount=item.items.slice(0,lastTool+1).filter(message=>message.role==='tool').length;
+        const summary=el('summary','',`执行过程 · ${toolCount} 个步骤`), processState=el('span','process-state',process.open ? '点击收起' : '点击展开'); summary.append(processState);
+        const processBody=el('div','execution-body');
+        for (const message of item.items.slice(0,lastTool+1)) {
+          if (message.role==='assistant' && message.text) processBody.append(markdownBody(message.text,'process-text'));
+          else if (message.role==='tool') processBody.append(toolDetails(message));
+          else if (message.role==='notice') processBody.append(el('div','process-notice',message.text));
+        }
+        process.append(summary,processBody); process.ontoggle=()=>{processState.textContent=process.open ? '点击收起' : '点击展开';process.open ? openProcessTurns.add(item.id) : openProcessTurns.delete(item.id);requestAnimationFrame(updateScrollButton);}; answer.append(process);
+      }
+      const finalItems=lastTool>=0 ? item.items.slice(lastTool+1) : item.items;
+      const final=el('div','answer-content');
+      for (const message of finalItems) {
+        if (message.role==='assistant' && message.text) final.append(markdownBody(message.text,'body'));
+        else if (message.role==='notice') final.append(el('div','answer-notice',message.text));
+        else if (message.role==='tool') final.append(toolDetails(message));
+      }
+      if (final.childNodes.length) answer.append(final);
+      wrapper.append(answerLabel,answer);
     }
-    node.append(label,body);
+    container.append(wrapper);
   }
   if (atEnd) feed.scrollTop = feed.scrollHeight;
-  $('#scroll-bottom').hidden = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 120;
+  updateScrollButton();
+}
+function addPending(items, sessionId = current?.id) {
+  if (!sessionId || !items?.length) return;
+  const existing=pendingAttachments.get(sessionId) || [], merged=[...existing];
+  for (const item of items) if (!merged.some(value => value.relativePath === item.relativePath)) merged.push(item);
+  pendingAttachments.set(sessionId,merged); render();
+  const copied=items.filter(item => item.copied).length;
+  toast(copied ? `${items.length} 个文件已添加；其中 ${copied} 个已复制到当前工作目录` : `${items.length} 个工作目录文件已添加`);
+}
+function renderPending() {
+  const container=$('#pending-attachments'), items=current ? pendingAttachments.get(current.id) || [] : [];
+  container.replaceChildren(); container.hidden=!items.length;
+  for (const item of items) {
+    const chip=el('div','pending-chip'), name=localPathButton(item.relativePath), remove=el('button','','×');
+    name.classList.add('pending-path'); name.querySelector('.local-path-value').textContent=`▱ ${item.name}`; remove.type='button'; remove.setAttribute('aria-label',`移除 ${item.name}`);
+    remove.onclick=()=>{const next=(pendingAttachments.get(current.id)||[]).filter(value=>value.relativePath!==item.relativePath);if(next.length)pendingAttachments.set(current.id,next);else pendingAttachments.delete(current.id);render();};
+    chip.append(name,remove); container.append(chip);
+  }
 }
 function approvals() {
   const requests = state.approvals.filter(r => r.sessionId === current?.id);
@@ -166,15 +263,17 @@ function render() {
   $('#welcome-new').textContent = current ? '开始输入你的需求 ↓' : '设置工作文件夹与模型 ↗';
   $('#prompt').disabled = false;
   const running = active || sending;
-  $('#send').disabled = active ? current.status === 'stopping' : sending || !$('#prompt').value.trim();
+  const hasAttachments = !!current && !!pendingAttachments.get(current.id)?.length;
+  $('#send').disabled = active ? current.status === 'stopping' : sending || (!$('#prompt').value.trim() && !hasAttachments);
   $('#send').textContent = active ? current.status === 'stopping' ? '正在停止…' : '■ 运行中…' : sending ? '正在发送…' : '发送 ↑';
   $('#send').classList.toggle('running',running);
   $('#send').title = active && current.status !== 'stopping' ? '点击停止当前回答' : '';
   $('#send').setAttribute('aria-label',active && current.status !== 'stopping' ? '停止当前回答' : '发送消息');
   $('#composer-hint').textContent = current?.activity || (active ? current.status === 'waiting' ? '等待你的确认后继续' : 'Claude 正在处理，你可以先编辑下一条消息' : current ? '在当前工作文件夹中继续对话' : state.settings.defaultCwd ? '发送后将按默认设置创建对话' : '输入需求，发送时选择工作文件夹');
   $('#usage').textContent = current?.usage?.duration ? `本次 ${(current.usage.duration/1000).toFixed(1)} 秒` : '';
-  $('#send-key-hint').textContent = state.settings.sendKey === 'shift-enter' ? 'Shift + Enter 发送 · Enter 换行' : 'Enter 发送 · Shift + Enter 换行';
-  renderMessages(); approvals();
+  $('#send-key-hint').textContent = state.settings.sendKey === 'ctrl-enter' ? 'Enter 换行 · Ctrl + Enter 发送' : 'Enter 发送 · Ctrl + Enter 换行';
+  $('#attach-files').disabled = !current || sending;
+  renderMessages(); renderPending(); approvals();
 }
 function newDialog() { $('#new-cwd').value = state.settings.defaultCwd || current?.cwd || ''; $('#new-model').value = state.settings.model || ''; $('#new-error').textContent = ''; $('#new-dialog').showModal(); }
 async function renameDialog(id) {
@@ -188,9 +287,27 @@ async function modelDialog(id) {
 }
 async function settingsDialog() {
   $('#cli-path').value = state.settings.cliPath || ''; $('#default-cwd').value = state.settings.defaultCwd || ''; $('#model').value = state.settings.model || ''; $('#send-key').value = state.settings.sendKey || 'enter'; $('#settings-error').textContent = '';
+  $('#update-current').textContent = state.version;
+  $('#update-latest').textContent = updateAvailable?.version || '—';
+  $('#update-badge').hidden = !updateAvailable?.available;
+  $('#update-status').textContent = updateAvailable ? (updateAvailable.available ? `发现新版本 v${updateAvailable.version}` : '当前已是最新版') : '检测后显示 GitHub 最新版本';
+  $('#check-update').textContent = updating ? '检测中…' : '↻ 检测'; $('#check-update').disabled = updating;
+  $('#download-update').textContent = updateAvailable?.available ? '↓ 下载新版' : '↓ 重新下载';
   $('#archive-count').textContent = '读取中…'; $('#settings-dialog').showModal();
   try { const items = await api.archives(); $('#archive-count').textContent = items.length ? `${items.length} 个已归档对话` : '暂无归档'; }
   catch (error) { $('#archive-count').textContent = error.message; }
+}
+async function updateAction() {
+  const button = $('#check-update'), status = $('#update-status');
+  button.disabled = true; updating = true;
+  try {
+    button.textContent = '检测中…'; status.textContent = '正在连接 GitHub…';
+    const result = await api.updateCheck();
+    updateAvailable = result; $('#update-latest').textContent = result.version || state.version; $('#update-badge').hidden = !result.available;
+    $('#download-update').textContent = result.available ? '↓ 下载新版' : '↓ 重新下载';
+    status.textContent = result.available ? `发现新版本 v${result.version}` : '当前已是最新版';
+  } catch (error) { status.textContent = error.message; }
+  finally { updating = false; button.disabled = false; button.textContent = '↻ 检测'; }
 }
 function archiveTime(value) { return new Date(value).toLocaleString('zh-CN',{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
 async function refreshArchives() {
@@ -231,7 +348,8 @@ async function check(path) {
 }
 async function sendMessage() {
   if (busy(current) || sending) return;
-  const prompt = $('#prompt').value; if (!prompt.trim()) return;
+  const prompt = $('#prompt').value, attachments=current ? pendingAttachments.get(current.id) || [] : [];
+  if (!prompt.trim() && !attachments.length) return;
   sending = true; clearTimeout(draftTimer); render();
   try {
     if (!current) {
@@ -246,7 +364,7 @@ async function sendMessage() {
       current = created; $('#messages').replaceChildren(); approvalsSignature = ''; list();
     }
     const id = current.id;
-    const result = await api.send({id,prompt}); drafts.delete(id);
+    const result = await api.send({id,prompt,attachments}); drafts.delete(id); pendingAttachments.delete(id);
     if (current?.id === id) { current = result; $('#prompt').value = ''; }
   } catch (e) { toast(e.message); }
   finally { sending = false; render(); $('#prompt').focus(); }
@@ -255,7 +373,10 @@ $('#new-chat').onclick = () => attempt(newDialog);
 $('#welcome-new').onclick = () => current ? $('#prompt').focus() : attempt(newDialog);
 $('#search').oninput = list;
 $('#settings-button').onclick = settingsDialog;
+$('#attach-files').onclick = () => attempt(async () => { if (!current) return toast('请先新建对话并选择工作文件夹'); const id=current.id; addPending(await api.files(id),id); });
 $('#manage-archive').onclick = () => attempt(archiveDialog);
+$('#check-update').onclick = () => attempt(updateAction);
+$('#download-update').onclick = () => attempt(() => api.link(updateAvailable?.url || latestReleaseUrl));
 for (const button of document.querySelectorAll('.close-dialog')) button.onclick = () => {
   const dialog = button.closest('dialog'); dialog.close();
   if (dialog.id === 'archive-dialog' && archiveReturnToSettings) { archiveReturnToSettings = false; $('#settings-dialog').showModal(); }
@@ -293,8 +414,9 @@ $('#send').onclick = () => busy(current) ? attempt(() => api.stop(current.id)) :
 $('#prompt').addEventListener('compositionstart', () => composing = true);
 $('#prompt').addEventListener('compositionend', () => { setTimeout(() => composing = false,0); });
 $('#prompt').addEventListener('keydown', event => {
-  const sendWithShift = state.settings.sendKey === 'shift-enter';
-  if (event.key === 'Enter' && event.shiftKey === sendWithShift && !event.ctrlKey && !event.metaKey && !event.altKey && !event.isComposing && !composing && event.keyCode !== 229) {
+  const sendWithCtrl = state.settings.sendKey === 'ctrl-enter';
+  const shortcutMatches = sendWithCtrl ? event.ctrlKey && !event.shiftKey : !event.ctrlKey && !event.shiftKey;
+  if (event.key === 'Enter' && shortcutMatches && !event.metaKey && !event.altKey && !event.isComposing && !composing && event.keyCode !== 229) {
     event.preventDefault(); sendMessage();
   }
 });
@@ -303,9 +425,14 @@ $('#prompt').oninput = () => {
   render();
 };
 $('#new-dialog').addEventListener('close', () => sendAfterCreate = false);
-$('#feed').onscroll = () => $('#scroll-bottom').hidden = $('#feed').scrollHeight - $('#feed').scrollTop - $('#feed').clientHeight < 120;
-$('#scroll-bottom').onclick = () => { $('#feed').scrollTop = $('#feed').scrollHeight; };
-document.addEventListener('click', event => { const anchor = event.target.closest('a'); if (anchor) { event.preventDefault(); attempt(() => api.link(anchor.href)); } });
+$('#feed').onscroll = updateScrollButton;
+$('#scroll-bottom').onclick = () => { $('#feed').scrollTop = $('#feed').scrollHeight; updateScrollButton(); };
+if ('ResizeObserver' in window) new ResizeObserver(() => requestAnimationFrame(updateScrollButton)).observe($('#messages'));
+document.addEventListener('click', event => {
+  const localPath=event.target.closest('.local-path');
+  if (localPath) { event.preventDefault(); if (current) attempt(async()=>{await api.reveal({id:current.id,path:localPath.dataset.path});toast('已在文件管理器中定位');}); return; }
+  const anchor=event.target.closest('a'); if (anchor) { event.preventDefault(); attempt(() => api.link(anchor.href)); }
+});
 document.addEventListener('keydown', event => { if (event.ctrlKey && event.key.toLowerCase() === 'n' && !document.querySelector('dialog[open]')) { event.preventDefault(); attempt(newDialog); } });
 window.addEventListener('blur', () => attempt(flushDraft));
 api.onEvent(({type,data}) => {
@@ -317,6 +444,13 @@ api.onEvent(({type,data}) => {
     list(); render();
   }
   if (type === 'session' && data.id === current?.id) { current = data; render(); }
+  if (type === 'fileDrag') {
+    $('.composer').classList.toggle('file-dragging',data.type === 'enter' || data.type === 'over');
+    if (data.type === 'drop') attempt(async () => {
+      if (!current) return toast('请先新建对话并选择工作文件夹');
+      const id=current.id; addPending(await api.attach({id,paths:data.paths}),id);
+    });
+  }
   if (type === 'approvals') { state.approvals = data; approvals(); }
   if (type === 'error') toast(data);
 });

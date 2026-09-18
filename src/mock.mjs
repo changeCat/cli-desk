@@ -1,4 +1,7 @@
 // Deterministic integration fixture. Disabled in packaged builds.
+import fs from 'node:fs';
+import path from 'node:path';
+
 export function fakeQuery({ options }) {
   let stopped = false;
   const delay = () => new Promise(r => setTimeout(r, 100));
@@ -11,9 +14,14 @@ export function fakeQuery({ options }) {
       await delay(); if (stopped || options.abortController.signal.aborted) throw new Error('aborted');
       yield { type:'stream_event', session_id, event:{ type:'content_block_delta', delta:{type:'text_delta',text:chunk} } };
     }
-    const approved = await options.canUseTool('Write', { file_path:'example.txt', content:'经过确认后写入' }, { signal:options.abortController.signal });
+    const tool={id:'mock-tool-'+Date.now(),type:'tool_use',name:'Write',input:{file_path:'example.txt',content:'经过确认后写入'}};
+    yield {type:'stream_event',session_id,event:{type:'content_block_start',content_block:tool}};
+    const approved = await options.canUseTool(tool.name,tool.input,{ signal:options.abortController.signal });
     if (stopped || options.abortController.signal.aborted) throw new Error('aborted');
-    yield { type:'assistant', session_id, message:{id:'final-' + Date.now(),content:[{type:'text',text:approved.behavior === 'allow' ? '已收到允许。' : '已拒绝此次操作。'}]} };
+    yield {type:'user',session_id,message:{content:[{type:'tool_result',tool_use_id:tool.id,is_error:approved.behavior!=='allow',content:approved.behavior==='allow'?'已写入':'已拒绝'}]}};
+    const generated=path.join(options.cwd,'example.txt');
+    if (approved.behavior === 'allow') fs.writeFileSync(generated,'fixture');
+    yield { type:'assistant', session_id, message:{id:'final-' + Date.now(),content:[{type:'text',text:approved.behavior === 'allow' ? `已收到允许。文件位于 \`${generated}\`。` : '已拒绝此次操作。'}]} };
     yield { type:'result', subtype:'success', session_id, is_error:false, total_cost_usd:0, duration_ms:500 };
   })();
   iterator.close = () => { stopped = true; }; return iterator;

@@ -5,7 +5,7 @@ use backend::Backend;
 use serde_json::{json, Value};
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
 };
 use tauri::{
@@ -24,6 +24,7 @@ struct Lifecycle {
 }
 #[derive(Default)]
 struct TestDialogs(std::sync::Mutex<Option<bool>>);
+const TRAY_ID: &str = "main-tray";
 fn text(value: &Value, max: usize) -> Result<&str, String> {
     value
         .as_str()
@@ -36,6 +37,26 @@ fn show(app: &AppHandle) {
         let _ = win.show();
         let _ = win.set_focus();
     }
+}
+fn remove_tray(app: &AppHandle) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_visible(false);
+    }
+    let _ = app.remove_tray_by_id(TRAY_ID);
+}
+fn local_workspace_path(cwd: &Path, value: &str) -> Result<PathBuf, String> {
+    let requested = PathBuf::from(value);
+    let root = fs::canonicalize(cwd).map_err(|_| "当前工作文件夹不存在")?;
+    let requested = if requested.is_absolute() {
+        requested
+    } else {
+        cwd.join(requested)
+    };
+    let target = fs::canonicalize(requested).map_err(|_| "文件或文件夹不存在")?;
+    if !target.starts_with(&root) {
+        return Err("只允许打开当前工作文件夹中的文件".into());
+    }
+    Ok(target)
 }
 fn confirm(app: &AppHandle, title: &str, message: String, accept: &str) -> bool {
     if cfg!(debug_assertions) {
@@ -90,6 +111,23 @@ fn request_quit(app: &AppHandle) {
             .exiting
             .store(true, Ordering::SeqCst);
         backend.shutdown(&app).await;
+        remove_tray(&app);
+        app.exit(0);
+    });
+}
+
+fn quit_for_update(app: &AppHandle) {
+    let lifecycle = app.state::<Lifecycle>();
+    if lifecycle.exiting.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Some(win) = app.get_webview_window("main") {
+            let _ = win.hide();
+        }
+        app.state::<Backend>().shutdown(&app).await;
+        remove_tray(&app);
         app.exit(0);
     });
 }
@@ -116,8 +154,8 @@ async fn desk_request(
             state["runtime"] = json!({"path":backend.node,"version":backend.node_version,"bundled":backend.bundled_node});
             Ok(state)
         }
-        "get" | "create" | "rename" | "model" | "draft" | "send" | "stop" | "answer"
-        | "settings" | "check" | "archives" | "restore" => {
+        "get" | "create" | "rename" | "model" | "draft" | "attach" | "send" | "stop" | "answer"
+        | "settings" | "check" | "updateCheck" | "archives" | "restore" => {
             backend.request(&app, &method, payload).await
         }
         "delete" => {
@@ -135,6 +173,25 @@ async fn desk_request(
             .blocking_pick_folder()
             .map(|p| json!(p.to_string()))
             .unwrap_or(Value::Null)),
+        "files" => {
+            let id = text(&payload, 80)?.to_string();
+            let paths = app
+                .dialog()
+                .file()
+                .set_title("添加文件或图片")
+                .blocking_pick_files()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>();
+            if paths.is_empty() {
+                Ok(json!([]))
+            } else {
+                backend
+                    .request(&app, "attach", json!({"id":id,"paths":paths}))
+                    .await
+            }
+        }
         "cli" => Ok(app
             .dialog()
             .file()
@@ -165,6 +222,19 @@ async fn desk_request(
             }
             app.opener()
                 .open_path(cwd.to_string_lossy(), None::<&str>)
+                .map_err(|e| e.to_string())?;
+            Ok(Value::Null)
+        }
+        "reveal" => {
+            let id = text(&payload["id"], 80)?;
+            let session = backend.request(&app, "get", json!(id)).await?;
+            let cwd = PathBuf::from(text(&session["cwd"], 32768)?);
+            let target = local_workspace_path(&cwd, text(&payload["path"], 32768)?)?;
+            if backend.fixture {
+                return Ok(json!(target.to_string_lossy()));
+            }
+            app.opener()
+                .reveal_item_in_dir(&target)
                 .map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
@@ -228,7 +298,13 @@ fn test_desktop(app: AppHandle, action: String, response: Option<bool>) -> Resul
 
 fn main() {
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| show(app)))
+        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            if args.iter().any(|arg| arg == "--quit-for-update") {
+                quit_for_update(app);
+            } else {
+                show(app);
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
@@ -273,7 +349,7 @@ fn main() {
             } else {
                 app.default_window_icon().unwrap().clone()
             };
-            TrayIconBuilder::new()
+            TrayIconBuilder::with_id(TRAY_ID)
                 .icon(icon)
                 .icon_as_template(cfg!(target_os = "macos"))
                 .tooltip("CLI Desk · 点击打开，右键退出")
@@ -329,11 +405,6 @@ fn main() {
             match event {
                 tauri::WindowEvent::CloseRequested { api, .. } if !exiting => {
                     api.prevent_close();
-                    let _ = win.hide();
-                }
-                tauri::WindowEvent::Resized(_)
-                    if !exiting && win.is_minimized().unwrap_or(false) =>
-                {
                     let _ = win.hide();
                 }
                 _ => {}
@@ -402,5 +473,26 @@ mod tests {
         assert!(super::text(&serde_json::json!(false), 80).is_err());
         assert!(super::text(&serde_json::json!("abc"), 2).is_err());
         assert_eq!(super::text(&serde_json::json!("abc"), 3).unwrap(), "abc");
+    }
+    #[test]
+    fn local_paths_cannot_escape_the_workspace() {
+        let root = std::env::temp_dir().join(format!("cli-desk-path-test-{}", std::process::id()));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let inside = workspace.join("inside.txt");
+        let outside = root.join("outside.txt");
+        std::fs::write(&inside, "inside").unwrap();
+        std::fs::write(&outside, "outside").unwrap();
+        assert_eq!(
+            super::local_workspace_path(&workspace, inside.to_str().unwrap()).unwrap(),
+            std::fs::canonicalize(&inside).unwrap()
+        );
+        assert_eq!(
+            super::local_workspace_path(&workspace, "inside.txt").unwrap(),
+            std::fs::canonicalize(&inside).unwrap()
+        );
+        assert!(super::local_workspace_path(&workspace, outside.to_str().unwrap()).is_err());
+        assert!(super::local_workspace_path(&workspace, "../outside.txt").is_err());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

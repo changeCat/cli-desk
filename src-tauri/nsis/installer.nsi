@@ -643,6 +643,9 @@ Section Install
     !insertmacro NSIS_HOOK_PREINSTALL
   !endif
 
+  ; Ask the running instance to remove its tray icon and shut down cleanly.
+  ; CheckIfAppIsRunning below remains as a fallback if graceful shutdown fails.
+  Call StopRunningAppGracefully
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
 
   ; Copy main executable
@@ -740,6 +743,47 @@ Section Install
     SetAutoClose true
   ${EndIf}
 SectionEnd
+
+Function StopRunningAppGracefully
+  !if "${INSTALLMODE}" == "currentUser"
+    nsis_tauri_utils::FindProcessCurrentUser "${MAINBINARYNAME}.exe"
+  !else
+    nsis_tauri_utils::FindProcess "${MAINBINARYNAME}.exe"
+  !endif
+  Pop $R0
+  ${If} $R0 <> 0
+    Return
+  ${EndIf}
+
+  IfSilent graceful_stop 0
+  ${If} $PassiveMode = 1
+    Goto graceful_stop
+  ${EndIf}
+  MessageBox MB_ICONEXCLAMATION|MB_OKCANCEL "CLI Desk 正在运行。继续安装会先安全关闭当前应用。" IDOK graceful_stop IDCANCEL graceful_cancel
+
+  graceful_stop:
+    Exec '"$INSTDIR\${MAINBINARYNAME}.exe" --quit-for-update'
+    StrCpy $R9 0
+  graceful_wait:
+    Sleep 150
+    !if "${INSTALLMODE}" == "currentUser"
+      nsis_tauri_utils::FindProcessCurrentUser "${MAINBINARYNAME}.exe"
+    !else
+      nsis_tauri_utils::FindProcess "${MAINBINARYNAME}.exe"
+    !endif
+    Pop $R0
+    ${If} $R0 <> 0
+      Return
+    ${EndIf}
+    IntOp $R9 $R9 + 1
+    ${If} $R9 < 20
+      Goto graceful_wait
+    ${EndIf}
+    Return
+
+  graceful_cancel:
+    Abort "安装已取消"
+FunctionEnd
 
 Function .onInstSuccess
   ; Check for `/R` flag only in silent and passive installers because

@@ -45,10 +45,16 @@ test('tool denial, session resume and streamed text persistence', async () => {
 
 test('global model and send shortcut persist across restart', () => {
   const {dir,store} = fixture(); assert.equal(store.settings.sendKey, 'enter');
-  store.saveSettings({...store.settings, model:'sonnet', sendKey:'shift-enter'});
+  store.saveSettings({...store.settings, model:'sonnet', sendKey:'ctrl-enter'});
   const fresh = new Store(dir);
-  assert.equal(fresh.settings.sendKey, 'shift-enter'); assert.equal(fresh.settings.model, 'sonnet');
+  assert.equal(fresh.settings.sendKey, 'ctrl-enter'); assert.equal(fresh.settings.model, 'sonnet');
   assert.equal(fresh.create(dir, 'claude-model-id').model, 'claude-model-id');
+});
+
+test('legacy Shift+Enter setting migrates to Ctrl+Enter', () => {
+  const {dir,store} = fixture();
+  store.saveSettings({...store.settings, sendKey:'shift-enter'});
+  assert.equal(new Store(dir).settings.sendKey, 'ctrl-enter');
 });
 
 test('per-conversation model is fixed; blank uses Claude default and legacy sessions use the configured default', async () => {

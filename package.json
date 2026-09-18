@@ -1,6 +1,6 @@
 {
   "name": "cli-desk-local",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "A desktop interface for local AI coding CLIs on Windows and macOS",
   "author": "CLI Desk contributors",
   "license": "MIT",
