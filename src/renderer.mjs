@@ -415,8 +415,14 @@ $('#prompt').addEventListener('compositionstart', () => composing = true);
 $('#prompt').addEventListener('compositionend', () => { setTimeout(() => composing = false,0); });
 $('#prompt').addEventListener('keydown', event => {
   const sendWithCtrl = state.settings.sendKey === 'ctrl-enter';
+  const validEnter = event.key === 'Enter' && !event.metaKey && !event.altKey && !event.isComposing && !composing && event.keyCode !== 229;
+  if (validEnter && !sendWithCtrl && event.ctrlKey && !event.shiftKey) {
+    event.preventDefault();
+    const input=$('#prompt'), start=input.selectionStart, end=input.selectionEnd;
+    input.setRangeText('\n',start,end,'end'); input.dispatchEvent(new Event('input',{bubbles:true})); return;
+  }
   const shortcutMatches = sendWithCtrl ? event.ctrlKey && !event.shiftKey : !event.ctrlKey && !event.shiftKey;
-  if (event.key === 'Enter' && shortcutMatches && !event.metaKey && !event.altKey && !event.isComposing && !composing && event.keyCode !== 229) {
+  if (validEnter && shortcutMatches) {
     event.preventDefault(); sendMessage();
   }
 });

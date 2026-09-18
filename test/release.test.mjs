@@ -45,9 +45,11 @@ test('manual update controls stay at the bottom of settings and runtime trace is
 });
 
 test('composer exposes workspace attachments and only Ctrl-based shortcut labels',()=>{
+  const renderer=fs.readFileSync('src/renderer.mjs','utf8');
   assert.match(html,/id="attach-files"/);
   assert.match(html,/Enter 发送，Ctrl \+ Enter 换行/);
   assert.match(html,/Enter 换行，Ctrl \+ Enter 发送/);
+  assert.match(renderer,/setRangeText\('\\n',start,end,'end'\)/);
   assert.doesNotMatch(html,/Shift \+ Enter/);
 });
 
