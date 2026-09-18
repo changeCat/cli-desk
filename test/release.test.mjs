@@ -4,7 +4,6 @@ import fs from 'node:fs';
 
 const html=fs.readFileSync('src/index.html','utf8');
 const workflow=fs.readFileSync('.github/workflows/release.yml','utf8');
-const verification=fs.readFileSync('.github/workflows/build-installers.yml','utf8');
 
 test('sidebar shows the version as the brand subtitle and local storage notice by new chat',()=>{
   assert.doesNotMatch(html,/你的本地 AI 工作伙伴/);
@@ -17,10 +16,8 @@ test('release commands receive an explicit GitHub repository outside a checkout'
   assert.match(workflow,/GH_TOKEN: \$\{\{ github\.token \}\}\s+GH_REPO: \$\{\{ github\.repository \}\}/);
 });
 
-test('main validation stays lightweight and leaves release packaging to tags',()=>{
-  assert.match(verification,/name: Validate source \(no installers\)/);
-  assert.match(verification,/push:\s+branches:\s+- main/);
-  assert.doesNotMatch(verification,/npm run (?:package|test:packaged|verify:installer)/);
+test('only version tags trigger the single release workflow',()=>{
+  assert.equal(fs.existsSync('.github/workflows/build-installers.yml'),false);
   assert.match(workflow,/tags:\s+- 'v\*'/);
   assert.match(workflow,/npm run verify:installer/);
 });
