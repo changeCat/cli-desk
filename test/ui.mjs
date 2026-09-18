@@ -11,6 +11,8 @@ try {
   app=await launchDesktop({data});
   const page=app.page;const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.waitForSelector('#welcome-new');await page.screenshot({path:path.join(root,'01-welcome.png')});
+  const newChatLayout=await page.evaluate(()=>{const button=document.querySelector('#new-chat'),storage=document.querySelector('.new-chat-storage');return{height:button.getBoundingClientRect().height,storageInside:storage?.closest('button')===button};});
+  assert.ok(Math.abs(newChatLayout.height-52)<1,`新建对话按钮应保持原有高度，实际 ${newChatLayout.height}`);assert.equal(newChatLayout.storageInside,true);
   assert.equal(await page.locator('#prompt').isDisabled(),false);
   assert.equal(await page.locator('#stop').count(),0);
   assert.equal(await page.locator('#composer-hint').innerText(),'发送后将按默认设置创建对话');
