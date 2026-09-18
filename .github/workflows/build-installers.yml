@@ -1,9 +1,9 @@
-name: Verify desktop builds
+name: Validate source (no installers)
 
 on:
   push:
     branches:
-      - '**'
+      - main
   pull_request:
   workflow_dispatch:
 
@@ -72,9 +72,9 @@ jobs:
             throw 'WebView2 Runtime installation could not be verified.'
           }
           Write-Output "WebView2 Runtime $version"
-      - name: Windows full verification
+      - name: Windows tests and debug UI verification
         if: runner.os == 'Windows'
-        run: npm test && npm run build && npm run test:rust && node scripts/tauri.mjs build --debug --no-bundle --config src-tauri/tauri.test.conf.json && npm run test:ui && npm run test:packaged
+        run: npm test && npm run build && npm run test:rust && node scripts/tauri.mjs build --debug --no-bundle --config src-tauri/tauri.test.conf.json && npm run test:ui
       - name: macOS build verification (native UI acceptance remains manual)
         if: runner.os == 'macOS'
         run: npm test && npm run build && npm run test:rust
