@@ -58,6 +58,16 @@ fn local_workspace_path(cwd: &Path, value: &str) -> Result<PathBuf, String> {
     }
     Ok(target)
 }
+fn confirmed_external_url(payload: &Value) -> Result<tauri::Url, String> {
+    if payload["confirmed"].as_bool() != Some(true) {
+        return Err("打开外部链接前需要确认".into());
+    }
+    let url = tauri::Url::parse(text(&payload["url"], 10000)?).map_err(|_| "无效的链接")?;
+    if !["http", "https"].contains(&url.scheme()) {
+        return Err("只允许打开 HTTP 或 HTTPS 链接".into());
+    }
+    Ok(url)
+}
 fn confirm(app: &AppHandle, title: &str, message: String, accept: &str) -> bool {
     if cfg!(debug_assertions) {
         if let Some(response) = *app.state::<TestDialogs>().0.lock().unwrap() {
@@ -239,16 +249,10 @@ async fn desk_request(
             Ok(Value::Null)
         }
         "link" => {
-            let input = text(&payload, 10000)?;
-            let url = tauri::Url::parse(input).map_err(|_| "无效的链接")?;
-            if !["http", "https"].contains(&url.scheme()) {
-                return Err("只允许打开 HTTP 或 HTTPS 链接".into());
-            }
-            if confirm(&app, "打开外部链接？", url.to_string(), "在浏览器打开") {
-                app.opener()
-                    .open_url(url.to_string(), None::<&str>)
-                    .map_err(|e| e.to_string())?;
-            }
+            let url = confirmed_external_url(&payload)?;
+            app.opener()
+                .open_url(url.to_string(), None::<&str>)
+                .map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
         "export" => {
@@ -494,5 +498,11 @@ mod tests {
         assert!(super::local_workspace_path(&workspace, outside.to_str().unwrap()).is_err());
         assert!(super::local_workspace_path(&workspace, "../outside.txt").is_err());
         let _ = std::fs::remove_dir_all(root);
+    }
+    #[test]
+    fn external_links_require_confirmation_and_web_protocols() {
+        assert!(super::confirmed_external_url(&serde_json::json!({"url":"https://example.com","confirmed":true})).is_ok());
+        assert!(super::confirmed_external_url(&serde_json::json!({"url":"https://example.com"})).is_err());
+        assert!(super::confirmed_external_url(&serde_json::json!({"url":"file:///etc/passwd","confirmed":true})).is_err());
     }
 }

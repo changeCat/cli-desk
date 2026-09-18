@@ -23,6 +23,13 @@ function confirmAction({title,message,detail,accept='确认',danger=false,icon='
 }
 function finishConfirm(value) { if (!confirmResolver) return; const resolve = confirmResolver; confirmResolver = null; $('#confirm-dialog').close(); resolve(value); }
 async function attempt(fn) { try { return await fn(); } catch (e) { toast(e.message); } }
+async function openExternalLink(value) {
+  let url;
+  try { url=new URL(value); if (!['http:','https:'].includes(url.protocol)) throw new Error(); }
+  catch { throw new Error('只允许打开 HTTP 或 HTTPS 链接'); }
+  const accepted=await confirmAction({title:'打开外部链接？',message:'即将在默认浏览器中打开以下地址',detail:url.toString(),accept:'在浏览器打开',icon:'↗'});
+  if (accepted) await api.link({url:url.toString(),confirmed:true});
+}
 function date(time) {
   const value = new Date(time), pad = number => String(number).padStart(2,'0');
   if (Number.isNaN(value.getTime())) return '';
@@ -376,7 +383,7 @@ $('#settings-button').onclick = settingsDialog;
 $('#attach-files').onclick = () => attempt(async () => { if (!current) return toast('请先新建对话并选择工作文件夹'); const id=current.id; addPending(await api.files(id),id); });
 $('#manage-archive').onclick = () => attempt(archiveDialog);
 $('#check-update').onclick = () => attempt(updateAction);
-$('#download-update').onclick = () => attempt(() => api.link(updateAvailable?.url || latestReleaseUrl));
+$('#download-update').onclick = () => attempt(() => openExternalLink(updateAvailable?.url || latestReleaseUrl));
 for (const button of document.querySelectorAll('.close-dialog')) button.onclick = () => {
   const dialog = button.closest('dialog'); dialog.close();
   if (dialog.id === 'archive-dialog' && archiveReturnToSettings) { archiveReturnToSettings = false; $('#settings-dialog').showModal(); }
@@ -437,7 +444,7 @@ if ('ResizeObserver' in window) new ResizeObserver(() => requestAnimationFrame(u
 document.addEventListener('click', event => {
   const localPath=event.target.closest('.local-path');
   if (localPath) { event.preventDefault(); if (current) attempt(async()=>{await api.reveal({id:current.id,path:localPath.dataset.path});toast('已在文件管理器中定位');}); return; }
-  const anchor=event.target.closest('a'); if (anchor) { event.preventDefault(); attempt(() => api.link(anchor.href)); }
+  const anchor=event.target.closest('a'); if (anchor) { event.preventDefault(); attempt(() => openExternalLink(anchor.href)); }
 });
 document.addEventListener('keydown', event => { if (event.ctrlKey && event.key.toLowerCase() === 'n' && !document.querySelector('dialog[open]')) { event.preventDefault(); attempt(newDialog); } });
 window.addEventListener('blur', () => attempt(flushDraft));

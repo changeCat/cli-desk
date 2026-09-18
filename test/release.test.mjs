@@ -44,6 +44,14 @@ test('manual update controls stay at the bottom of settings and runtime trace is
   assert.doesNotMatch(backend,/traceList/);
 });
 
+test('external links use the themed confirmation dialog before native opening',()=>{
+  const renderer=fs.readFileSync('src/renderer.mjs','utf8');
+  assert.match(renderer,/confirmAction\(\{title:'打开外部链接？'/);
+  assert.match(renderer,/api\.link\(\{url:url\.toString\(\),confirmed:true\}\)/);
+  assert.match(native,/confirmed_external_url\(&payload\)/);
+  assert.doesNotMatch(native,/confirm\(&app, "打开外部链接？"/);
+});
+
 test('composer exposes workspace attachments and only Ctrl-based shortcut labels',()=>{
   const renderer=fs.readFileSync('src/renderer.mjs','utf8');
   assert.match(html,/id="attach-files"/);
