@@ -2,12 +2,23 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export function fakeQuery({ options }) {
+export function fakeQuery({ prompt, options }) {
   let stopped = false;
   const delay = () => new Promise(r => setTimeout(r, 100));
   const iterator = (async function* () {
     const session_id = options.resume || 'mock-session-' + Date.now();
     yield { type:'system', subtype:'init', session_id };
+    // Explicit silent-provider fixture for the live status and cancellation UI.
+    let input=''; if (prompt) for await (const item of prompt) input+=item.message.content;
+    if (input==='[fixture:quiet]') {
+      const signal=options.abortController.signal;
+      await new Promise(resolve=>{
+        const finish=()=>{clearTimeout(timer);signal.removeEventListener('abort',finish);resolve();};
+        const timer=setTimeout(finish,60000); signal.addEventListener('abort',finish,{once:true});
+        if (signal.aborted) finish();
+      });
+      if (stopped || signal.aborted) throw new Error('aborted');
+    }
     const messageId = 'msg-' + Date.now();
     yield { type:'stream_event', session_id, event:{ type:'message_start', message:{id:messageId} } };
     for (const chunk of ['这是一个','**测试回复**。\n\n','```js\nconsole.log("你好");\n```\n','链接与图片会安全处理。 <img src=x onerror="window.hacked=true">']) {

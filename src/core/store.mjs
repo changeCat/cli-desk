@@ -39,6 +39,7 @@ export class Store {
       this.sessions.set(session.id, session);
       if (['running', 'waiting', 'stopping'].includes(session.status)) {
         session.status = 'interrupted';
+        session.activity = ''; session.runStartedAt = null; session.lastEventAt = null;
         session.messages.push({ id: randomUUID(), role: 'notice', text: '上次运行意外中断。已保留收到的内容，可以发送新消息继续。', at: Date.now() });
         this.save(session);
       }

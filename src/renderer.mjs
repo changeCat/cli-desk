@@ -9,6 +9,7 @@ const openProcessTurns = new Set(), openTools = new Set();
 let menuSessionId = null, editingSessionId = null, selectionRequest = 0;
 let confirmResolver = null, archiveReturnToSettings = false, sendAfterCreate = false;
 let updateAvailable = null, updating = false;
+let activityTimer;
 const latestReleaseUrl = 'https://github.com/changeCat/cli-desk/releases/latest';
 const statusNames = { idle:'就绪', running:'正在处理', waiting:'等待确认', stopping:'正在停止', error:'请求失败', interrupted:'已停止' };
 const busy = s => s && ['running','waiting','stopping'].includes(s.status);
@@ -157,6 +158,29 @@ function messageLabel(role, at, copyText) {
   label.append(el('span','avatar',role==='user' ? '◌' : '✳'),el('span','',role==='user' ? '你' : 'Claude'),el('time','',new Date(at).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})));
   const copy=el('button','copy','复制'); copy.onclick=()=>attempt(async()=>{await api.copy(copyText);toast('已复制');}); label.append(copy); return label;
 }
+function elapsedTime(milliseconds) {
+  const seconds=Math.max(0,Math.floor(milliseconds/1000));
+  return seconds<60 ? `${seconds} 秒` : `${Math.floor(seconds/60)} 分 ${seconds%60} 秒`;
+}
+function updateActivity() {
+  const card=$('#run-activity'); if (!card || !busy(current)) return;
+  const now=Date.now(), lastUser=current.messages.findLast(message=>message.role==='user');
+  const started=current.runStartedAt || lastUser?.at || now;
+  const label=current.status==='waiting' ? '等待你的确认或回答' : current.status==='stopping' ? '正在停止，保留已收到的内容…' : current.activity || '等待 Claude 回复…';
+  card.dataset.state=current.status;
+  const title=card.querySelector('.activity-title'); if (title.textContent!==label) title.textContent=label;
+  card.querySelector('.activity-time').textContent=`已用 ${elapsedTime(now-started)}`;
+  const quiet=now-(current.lastEventAt || started), note=card.querySelector('.activity-note');
+  note.hidden=current.status!=='running' || quiet<30000;
+  if (!note.hidden) note.textContent=`已 ${elapsedTime(quiet)} 未收到新反馈，仍在等待 Claude。可点击右下角运行按钮停止。`;
+}
+function activityCard() {
+  const card=el('div','run-activity'); card.id='run-activity';
+  const row=el('div','activity-row'), spinner=el('span','activity-spinner'); spinner.setAttribute('aria-hidden','true');
+  const title=el('span','activity-title'); title.setAttribute('role','status');
+  const time=el('span','activity-time'); time.setAttribute('aria-live','off');
+  row.append(spinner,title,time); const note=el('p','activity-note'); note.hidden=true; card.append(row,note); return card;
+}
 function renderMessages() {
   const container = $('#messages'), feed = $('#feed');
   const atEnd = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 90;
@@ -182,10 +206,12 @@ function renderMessages() {
       }
       wrapper.append(questionLabel,question);
     }
-    if (item.items.length) {
+    const activeTurn=busy(current) && item===turns.at(-1);
+    if (item.items.length || activeTurn) {
       const assistantText=item.items.filter(message=>message.role==='assistant').map(message=>message.text).join('\n\n');
-      const answer=el('article','message assistant turn-answer'); answer.dataset.messageId=item.items[0].id;
-      const answerLabel=messageLabel('assistant',item.items[0].at,assistantText || item.items.map(message=>message.text||message.name||'').join('\n')); answerLabel.classList.add('turn-label','answer-label');
+      const answer=el('article','message assistant turn-answer'); answer.dataset.messageId=item.items[0]?.id || `pending-${item.id}`;
+      const answerLabel=messageLabel('assistant',item.items[0]?.at || item.user.at,assistantText || item.items.map(message=>message.text||message.name||'').join('\n')); answerLabel.classList.add('turn-label','answer-label');
+      if (!item.items.length) answerLabel.querySelector('.copy').remove();
       const lastTool=item.items.reduce((last,message,index)=>message.role==='tool' ? index : last,-1);
       if (lastTool>=0) {
         const process=el('details','execution-process'); process.open=openProcessTurns.has(item.id);
@@ -207,10 +233,14 @@ function renderMessages() {
         else if (message.role==='tool') final.append(toolDetails(message));
       }
       if (final.childNodes.length) answer.append(final);
+      if (activeTurn) answer.append(activityCard());
       wrapper.append(answerLabel,answer);
     }
     container.append(wrapper);
   }
+  clearInterval(activityTimer); activityTimer=null;
+  updateActivity();
+  if (busy(current)) activityTimer=setInterval(updateActivity,1000);
   if (atEnd) feed.scrollTop = feed.scrollHeight;
   updateScrollButton();
 }
@@ -276,7 +306,7 @@ function render() {
   $('#send').classList.toggle('running',running);
   $('#send').title = active && current.status !== 'stopping' ? '点击停止当前回答' : '';
   $('#send').setAttribute('aria-label',active && current.status !== 'stopping' ? '停止当前回答' : '发送消息');
-  $('#composer-hint').textContent = current?.activity || (active ? current.status === 'waiting' ? '等待你的确认后继续' : 'Claude 正在处理，你可以先编辑下一条消息' : current ? '在当前工作文件夹中继续对话' : state.settings.defaultCwd ? '发送后将按默认设置创建对话' : '输入需求，发送时选择工作文件夹');
+  $('#composer-hint').textContent = active ? current.status === 'waiting' ? '等待你的确认后继续' : current.status === 'stopping' ? '正在停止…' : current.activity || 'Claude 正在处理，你可以先编辑下一条消息' : current ? '在当前工作文件夹中继续对话' : state.settings.defaultCwd ? '发送后将按默认设置创建对话' : '输入需求，发送时选择工作文件夹';
   $('#usage').textContent = current?.usage?.duration ? `本次 ${(current.usage.duration/1000).toFixed(1)} 秒` : '';
   $('#send-key-hint').textContent = state.settings.sendKey === 'ctrl-enter' ? 'Enter 换行 · Ctrl + Enter 发送' : 'Enter 发送 · Ctrl + Enter 换行';
   $('#attach-files').disabled = !current || sending;

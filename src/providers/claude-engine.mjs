@@ -18,6 +18,7 @@ export class Engine {
     const run = { controller: new AbortController(), child: null, stopped: false, query: null, dirty: false, streamId: null, tools: new Map(), textIds: new Map(), finished: false };
     this.runs.set(id, run);
     s.status = 'running'; s.updatedAt = Date.now(); s.draft = '';
+    s.runStartedAt = s.updatedAt; s.lastEventAt = null; s.activity = '正在启动 Claude…'; s.usage = null;
     const userText = text.trim() || '请查看并处理附件。';
     if (!s.messages.some(m => m.role === 'user')) s.title = userText.slice(0, 30);
     s.messages.push({ id: randomUUID(), role: 'user', text: userText, attachments, at: Date.now() });
@@ -36,6 +37,7 @@ export class Engine {
     let msg = run.tools.get(block.id);
     if (!msg) { msg = { id: block.id || randomUUID(), role: 'tool', name: block.name || '工具', input: block.input || {}, text: '', status: 'running', at: Date.now() }; run.tools.set(msg.id, msg); s.messages.push(msg); }
     else if (block.input && Object.keys(block.input).length) msg.input = block.input;
+    s.activity = `正在执行工具 · ${msg.name}`;
     return msg;
   }
   async permission(s, run, name, input, options = {}) {
@@ -108,27 +110,38 @@ export class Engine {
         clearTimeout(startupTimer);
         if (run.stopped) break;
         if (event.session_id && !s.providerSessionId) { s.providerSessionId = event.session_id; this.store.save(s); }
-        if (event.parent_tool_use_id) continue;
+        s.lastEventAt = Date.now();
         run.dirty = true;
+        if (event.type === 'tool_progress') s.activity = `正在执行工具 · ${event.tool_name}`;
+        if (event.parent_tool_use_id) continue;
         if (event.type === 'stream_event') {
           const e = event.event;
-          if (e.type === 'message_start') run.streamId = e.message.id;
+          if (e.type === 'message_start') { run.streamId = e.message.id; s.activity = 'Claude 正在处理…'; }
+          if ((e.type === 'content_block_start' && e.content_block.type === 'thinking') || (e.type === 'content_block_delta' && e.delta.type === 'thinking_delta')) s.activity = 'Claude 正在思考…';
           if (e.type === 'content_block_start' && e.content_block.type === 'tool_use') this.tool(s, run, e.content_block);
-          if (e.type === 'content_block_delta' && e.delta.type === 'text_delta') this.textMessage(s, run, run.streamId || 'stream').text += e.delta.text;
+          if (e.type === 'content_block_delta' && e.delta.type === 'text_delta') { this.textMessage(s, run, run.streamId || 'stream').text += e.delta.text; s.activity = '正在生成回复…'; }
         } else if (event.type === 'assistant') {
           const key = event.message.id || run.streamId || event.uuid;
           const text = event.message.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
           if (text) {
+            s.activity = '正在处理后续步骤…';
             const msg = this.textMessage(s, run, key);
             if (!msg.text || text.startsWith(msg.text)) msg.text = text;
             else if (!msg.text.includes(text)) msg.text += '\n' + text;
           }
           for (const block of event.message.content) if (block.type === 'tool_use') this.tool(s, run, block);
+          if (!text && event.message.content.some(b => b.type === 'thinking')) s.activity = 'Claude 正在思考…';
         } else if (event.type === 'user' && Array.isArray(event.message?.content)) {
           for (const block of event.message.content) if (block.type === 'tool_result') {
             const msg = run.tools.get(block.tool_use_id);
             if (msg) { msg.status = block.is_error ? 'error' : 'done'; msg.text = (typeof block.content === 'string' ? block.content : JSON.stringify(block.content || '')).slice(0, 20000); }
           }
+          const activeTool = [...run.tools.values()].find(tool => tool.status === 'running');
+          s.activity = activeTool ? `正在执行工具 · ${activeTool.name}` : '等待 Claude 继续回复…';
+        } else if (event.type === 'system' && event.subtype === 'init') {
+          s.activity = '已连接 Claude，等待回复…';
+        } else if (event.type === 'system' && event.subtype === 'status') {
+          s.activity = event.status === 'compacting' ? '正在整理对话上下文…' : '等待 Claude 继续回复…';
         } else if (event.type === 'system' && event.subtype === 'api_retry') {
           s.activity = `连接重试 ${event.attempt}/${event.max_retries}，请稍候…`;
         } else if (event.type === 'result') {
@@ -153,7 +166,7 @@ export class Engine {
       // SDK handles graceful close; enforce bounded cleanup as a fallback.
       const child = run.child; if (child && child.exitCode === null) setTimeout(() => killTree(child), 3000).unref();
       for (const tool of run.tools.values()) if (tool.status === 'running') tool.status = run.stopped ? 'interrupted' : 'unknown';
-      s.activity = ''; s.updatedAt = Date.now(); run.finished = true; this.runs.delete(s.id);
+      s.activity = ''; s.runStartedAt = null; s.lastEventAt = null; s.updatedAt = Date.now(); run.finished = true; this.runs.delete(s.id);
       try { this.publish(s); } catch { this.emit('error', '保存失败，请检查磁盘空间。'); }
     }
   }

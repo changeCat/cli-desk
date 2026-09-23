@@ -83,6 +83,40 @@ test('stream and final assistant events do not duplicate the reply',async()=>{
   function query(){const iterator=(async function*(){yield {type:'stream_event',event:{type:'message_start',message:{id:'m1'}}}; yield {type:'stream_event',event:{type:'content_block_delta',delta:{type:'text_delta',text:'你好'}}}; yield {type:'assistant',message:{id:'m1',content:[{type:'text',text:'你好'}]}}; yield {type:'result',subtype:'success',is_error:false};})();iterator.close=()=>{};return iterator;}
   const engine=new Engine(store,query,()=>{},()=> 'fixture'); engine.start(s.id,'test'); await until(()=>!engine.runs.size); assert.equal(s.messages.filter(m=>m.role==='assistant').length,1); assert.equal(s.messages.find(m=>m.role==='assistant').text,'你好');
 });
+
+test('fixture provider publishes startup, thinking, retry and tool activity without inventing replies',async()=>{
+  const {dir,store}=fixture(), s=store.create(dir), snapshots=[];
+  let advance; const gate=()=>new Promise(resolve=>{advance=resolve;});
+  function query(){const iterator=(async function*(){
+    await gate();
+    yield {type:'system',subtype:'init',session_id:'activity-fixture'};
+    await gate();
+    yield {type:'stream_event',event:{type:'content_block_start',content_block:{type:'thinking'}}};
+    await gate();
+    yield {type:'system',subtype:'api_retry',attempt:1,max_retries:3};
+    await gate();
+    yield {type:'stream_event',event:{type:'content_block_delta',delta:{type:'text_delta',text:'保留的部分回复'}}};
+    await gate();
+    yield {type:'tool_progress',tool_name:'Read',parent_tool_use_id:'fixture-agent'};
+    await gate();
+    yield {type:'result',subtype:'success',is_error:false};
+  })();iterator.close=()=>{};return iterator;}
+  const engine=new Engine(store,query,(type,value)=>{if(type==='session')snapshots.push(structuredClone(value));},()=> 'fixture');
+  try {
+    engine.start(s.id,'fixture activity');
+    assert.equal(snapshots[0].activity,'正在启动 Claude…');assert.equal(snapshots[0].lastEventAt,null);assert.ok(s.runStartedAt);
+    const started=s.runStartedAt;
+    for (const expected of ['已连接 Claude，等待回复…','Claude 正在思考…','连接重试 1/3，请稍候…','正在生成回复…','正在执行工具 · Read']) {
+      const count=snapshots.length;advance();
+      await until(()=>snapshots.length>count);
+      assert.equal(snapshots.at(-1).activity,expected);assert.ok(s.lastEventAt>=started);assert.equal(s.runStartedAt,started);
+      if (expected==='Claude 正在思考…') assert.equal(s.messages.length,1);
+    }
+    advance();await until(()=>!engine.runs.size);
+    assert.equal(s.activity,'');assert.equal(s.runStartedAt,null);assert.equal(s.lastEventAt,null);
+    assert.equal(s.messages.find(message=>message.role==='assistant').text,'保留的部分回复');
+  } finally {advance?.();await engine.shutdown();}
+});
 test('invalid CLI fails before consuming the user draft',()=>{
   const {dir,store}=fixture(); const s=store.create(dir);s.draft='保留草稿';const engine=new Engine(store,fakeQuery,()=>{},()=>{throw new Error('not found')});assert.throws(()=>engine.start(s.id,'hello'));assert.equal(s.draft,'保留草稿');assert.equal(s.messages.length,0);
 });

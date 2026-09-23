@@ -26,6 +26,7 @@ try {
   assert.equal(await page.locator('.message.user').count(),0);
   await page.locator('#prompt').press('Enter');
   await page.waitForSelector('.approval');await page.waitForSelector('.execution-process');assert.equal(await page.locator('.execution-process').getAttribute('open'),null);await page.click('.execution-process>summary');assert.ok((await page.locator('.execution-process').innerText()).includes('测试回复'));await page.click('.execution-process>summary');await page.waitForTimeout(50);assert.equal(await page.locator('#scroll-bottom').isHidden(),true);
+  assert.equal(await page.locator('.activity-title').innerText(),'等待你的确认或回答');
   const firstId = await page.locator('.session.selected').getAttribute('data-session-id');
   assert.equal(await page.locator('#attach-files').isDisabled(),false);
   const firstRecord=JSON.parse(fs.readFileSync(path.join(data,'sessions',firstId+'.json')));assert.equal(firstRecord.model,'claude-test-model-id');assert.equal(firstRecord.cwd,data);
@@ -55,6 +56,7 @@ try {
   assert.equal((await app.action('status')).visible,true);
   await page.click('.approval .primary');await page.waitForFunction(()=>!document.querySelector('.session.selected')?.classList.contains('busy'));
   assert.equal(await page.locator('#send').innerText(),'发送 ↑');
+  assert.equal(await page.locator('#run-activity').count(),0);
   assert.ok((await page.locator('#messages').innerText()).includes('已收到允许'));
   assert.equal(await page.locator('.answer-label').count(),1);assert.equal(await page.locator('.turn-answer .message-label').count(),0);
   assert.equal(await page.locator('#usage').evaluate(node=>node.closest('.composer')!==null),true);
@@ -86,6 +88,7 @@ try {
   await page.locator('#prompt').press('Control+Enter');await page.waitForSelector('.approval');assert.equal(await page.locator('#send').getAttribute('aria-label'),'停止当前回答');await page.click('#send');await page.waitForFunction(()=>!document.querySelector('.session.selected')?.classList.contains('busy'));
   assert.equal(await page.locator('.approval').count(),0);
   assert.ok((await page.locator('.session.selected small').innerText()).includes('已停止'));
+  assert.equal(await page.locator('#run-activity').count(),0);
   await page.locator('.session.selected').click({button:'right'});const modelAction=await page.locator('#context-model').innerText();assert.ok(modelAction.includes('修改模型')&&!modelAction.includes('ID'));assert.equal(await page.locator('#context-open-cwd').isVisible(),true);await page.click('#context-open-cwd');await page.waitForFunction(()=>document.querySelector('#toast').textContent==='已打开当前目录');
   await page.locator('.session.selected').click({button:'right'});assert.equal(await page.locator('#context-export').isVisible(),true);await page.click('#context-model');await page.fill('#session-model','claude-updated-model-id');await page.click('#model-form button[type=submit]');await page.waitForSelector('#model-dialog',{state:'hidden'});
   assert.equal(JSON.parse(fs.readFileSync(path.join(data,'sessions',firstId+'.json'))).model,'claude-updated-model-id');
@@ -139,5 +142,24 @@ try {
   await reopened.waitForFunction(()=>document.querySelectorAll('.session').length===0);
   assert.equal(await reopened.locator('#prompt').isDisabled(),false);
   assert.equal(await reopened.locator('#composer-hint').innerText(),'发送后将按默认设置创建对话');
+  await reopened.fill('#prompt','[fixture:quiet]');await reopened.locator('#prompt').press('Control+Enter');
+  await reopened.waitForSelector('#run-activity');
+  await reopened.waitForFunction(()=>document.querySelector('.activity-title')?.textContent==='已连接 Claude，等待回复…');
+  assert.equal(await reopened.locator('.turn-answer .answer-content').count(),0);
+  assert.equal(await reopened.locator('.answer-label').count(),1);
+  const before=await reopened.locator('.activity-time').innerText();
+  await reopened.waitForFunction(value=>document.querySelector('.activity-time').textContent!==value,before);
+  // Fixture clock advances only the WebView, leaving the provider silent.
+  await reopened.clock.install();await reopened.clock.fastForward(31000);
+  await reopened.waitForSelector('.activity-note:not([hidden])');
+  assert.match(await reopened.locator('.activity-note').innerText(),/未收到新反馈/);
+  await reopened.screenshot({path:path.join(root,'08-waiting-feedback.png')});
+  await reopened.click('#new-chat');await reopened.fill('#new-cwd',projects);await reopened.click('#new-form button[type=submit]');
+  await reopened.waitForFunction(()=>document.querySelector('#title').textContent==='新对话');
+  assert.equal(await reopened.locator('#run-activity').count(),0);
+  await reopened.locator('.session').filter({hasText:'[fixture:quiet]'}).click();
+  await reopened.waitForSelector('#run-activity');assert.match(await reopened.locator('.activity-time').innerText(),/已用/);
+  await reopened.click('#send');await reopened.waitForFunction(()=>!document.querySelector('.session.selected')?.classList.contains('busy'));
+  assert.equal(await reopened.locator('#run-activity').count(),0);
   console.log('UI PASS: send-to-create defaults, inline stop state, exact timestamps, inline title path, edit model, open directory, context actions, stream, permissions, archives, responsive width and restart persistence (fixture).');
 } finally { await app?.close(); }
