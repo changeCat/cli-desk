@@ -10,6 +10,7 @@ export function fakeQuery({ prompt, options }) {
     yield { type:'system', subtype:'init', session_id };
     // Explicit silent-provider fixture for the live status and cancellation UI.
     let input=''; if (prompt) for await (const item of prompt) input+=item.message.content;
+    if (input==='[fixture:error]') throw new Error('fixture: 模拟请求失败');
     if (input==='[fixture:quiet]') {
       const signal=options.abortController.signal;
       await new Promise(resolve=>{

@@ -47,7 +47,7 @@ export class Store {
   }
   file(id) { if (!/^[\w-]{1,80}$/.test(id)) throw new Error('无效的对话 ID'); return path.join(this.root, 'sessions', `${id}.json`); }
   get(id) { const s = this.sessions.get(id); if (!s) throw new Error('对话不存在'); return s; }
-  list() { return [...this.sessions.values()].sort((a,b) => b.updatedAt-a.updatedAt).map(({messages, draft, ...s}) => s); }
+  list() { return [...this.sessions.values()].sort((a,b) => b.updatedAt-a.updatedAt).map(({messages, draft, draftAttachments, ...s}) => s); }
   create(cwd, model = '') {
     const s = { id: randomUUID(), title: '新对话', cwd, model, provider:'claude', providerSessionId: null, createdAt: Date.now(), updatedAt: Date.now(), status: 'idle', draft: '', messages: [] };
     this.sessions.set(s.id, s); this.save(s); return s;

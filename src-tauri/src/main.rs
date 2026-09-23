@@ -24,6 +24,8 @@ struct Lifecycle {
 }
 #[derive(Default)]
 struct TestDialogs(std::sync::Mutex<Option<bool>>);
+#[derive(Default)]
+struct TestSendGate(AtomicBool);
 const TRAY_ID: &str = "main-tray";
 fn text(value: &Value, max: usize) -> Result<&str, String> {
     value
@@ -164,7 +166,19 @@ async fn desk_request(
             state["runtime"] = json!({"path":backend.node,"version":backend.node_version,"bundled":backend.bundled_node});
             Ok(state)
         }
-        "get" | "create" | "rename" | "model" | "draft" | "attach" | "send" | "stop" | "answer"
+        "send" => {
+            let reply = backend.request(&app, &method, payload).await;
+            // Bounded acknowledgement delay for the isolated debug fixture only.
+            #[cfg(debug_assertions)]
+            if backend.fixture {
+                for _ in 0..100 {
+                    if !app.state::<TestSendGate>().0.load(Ordering::SeqCst) { break; }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            }
+            reply
+        }
+        "get" | "create" | "rename" | "model" | "draft" | "attach" | "stop" | "answer"
         | "settings" | "check" | "updateCheck" | "archives" | "restore" => {
             backend.request(&app, &method, payload).await
         }
@@ -286,6 +300,8 @@ fn test_desktop(app: AppHandle, action: String, response: Option<bool>) -> Resul
         "close" => win.close().map_err(|e| e.to_string())?,
         "minimize" => win.minimize().map_err(|e| e.to_string())?,
         "show" => show(&app),
+        "disconnect-backend" => app.state::<Backend>().terminate(),
+        "hold-send" => app.state::<TestSendGate>().0.store(response.unwrap_or(false), Ordering::SeqCst),
         "wide" => win
             .set_size(tauri::Size::Logical(tauri::LogicalSize {
                 width: 1500.0,
@@ -314,6 +330,7 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .manage(Lifecycle::default())
         .manage(TestDialogs::default())
+        .manage(TestSendGate::default())
         .invoke_handler(tauri::generate_handler![desk_request, test_desktop])
         .setup(|app| {
             let args: Vec<String> = std::env::args().collect();

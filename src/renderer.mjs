@@ -4,17 +4,55 @@ import { desk as api } from './desktop.mjs';
 
 const $ = selector => document.querySelector(selector);
 let state = { sessions:[], settings:{}, approvals:[] }, current = null, approvalsSignature = '', sending = false, composing = false;
-const drafts = new Map(), pendingAttachments = new Map(); let draftTimer, toastTimer;
+const drafts = new Map(), pendingAttachments = new Map(), draftWrites = new Map(), draftRevisions = new Map(); let draftTimer, toastTimer;
+let sendingId = null, composerRevision = 0, disconnected = '';
+const renderedTurns = new Map(), renderedMessages = new Map(), attention = new Map();
+const sessionVersions = new Map();
+let renderedSession = null, listSignature = '', attentionSignature = '';
 const openProcessTurns = new Set(), openTools = new Set();
 let menuSessionId = null, editingSessionId = null, selectionRequest = 0;
 let confirmResolver = null, archiveReturnToSettings = false, sendAfterCreate = false;
 let updateAvailable = null, updating = false;
 let activityTimer;
 const latestReleaseUrl = 'https://github.com/changeCat/cli-desk/releases/latest';
-const statusNames = { idle:'就绪', running:'正在处理', waiting:'等待确认', stopping:'正在停止', error:'请求失败', interrupted:'已停止' };
+const statusNames = { idle:'就绪', running:'正在处理', waiting:'等待确认', stopping:'正在停止', error:'请求失败', interrupted:'已停止', disconnected:'连接中断' };
 const busy = s => s && ['running','waiting','stopping'].includes(s.status);
 function el(tag, className, value) { const node = document.createElement(tag); if (className) node.className = className; if (value !== undefined) node.textContent = value; return node; }
 function toast(message) { $('#toast').textContent = message; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true,5000); }
+function renderAttention() {
+  const signature=JSON.stringify([...attention].map(([id,label])=>[id,label,state.sessions.find(s=>s.id===id)?.title]));
+  if(signature===attentionSignature)return; attentionSignature=signature;
+  const notice=$('#task-notice'); notice.replaceChildren(); notice.hidden=!attention.size;
+  document.title=attention.size ? `(${attention.size}) CLI Desk` : 'CLI Desk';
+  if (!attention.size) return;
+  const [id,label]=[...attention].at(-1), session=state.sessions.find(s=>s.id===id);
+  const view=el('button','',`查看对话${attention.size>1 ? `（${attention.size} 条提醒）` : ''}`);
+  view.onclick=()=>attempt(()=>select(id));
+  notice.append(el('span','',`“${session?.title || '对话'}”${label}`),view);
+}
+function trackAttention(sessions) {
+  const previous=new Map(state.sessions.map(s=>[s.id,s]));
+  for (const s of sessions) {
+    const old=previous.get(s.id);
+    if (old && old.status!==s.status && (s.id!==current?.id || document.hidden || !document.hasFocus())) {
+      if (s.status==='waiting') attention.set(s.id,'需要确认');
+      else if (busy(old) && s.status==='idle') attention.set(s.id,'已完成');
+      else if (s.status==='error') attention.set(s.id,'请求失败');
+      else attention.delete(s.id);
+    }
+  }
+  for (const id of attention.keys()) if(!sessions.some(s=>s.id===id))attention.delete(id);
+}
+function connectionLost(message) {
+  if (disconnected) return; disconnected=message;
+  closeSessionMenu();
+  const mark=s=>busy(s) ? {...s,status:'disconnected',activity:'',runStartedAt:null,lastEventAt:null} : s;
+  state.sessions=state.sessions.map(mark);
+  if (current) {current=mark(current);current.messages=current.messages.map(m=>m.role==='tool' && m.status==='running' ? {...m,status:'disconnected'} : m);}
+  state.approvals=[]; attention.clear(); clearTimeout(draftTimer);
+  $('#connection-dot').classList.remove('connected');
+  banner(message); renderAttention(); list(); render();
+}
 function confirmAction({title,message,detail,accept='确认',danger=false,icon='▱'}) {
   const dialog = $('#confirm-dialog');
   $('#confirm-title').textContent = title; $('#confirm-message').textContent = message; $('#confirm-detail').textContent = detail || ''; $('#confirm-detail').hidden = !detail; $('#confirm-icon').textContent = icon;
@@ -37,14 +75,18 @@ function date(time) {
   return `${value.getFullYear()}-${pad(value.getMonth()+1)}-${pad(value.getDate())} ${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}`;
 }
 function list() {
+  const signature=JSON.stringify([current?.id,$('#search').value,disconnected,state.sessions.map(s=>[s.id,s.title,s.status,s.updatedAt,attention.get(s.id)])]);
+  if (signature===listSignature) return; listSignature=signature;
   const fragment = document.createDocumentFragment();
   const term = $('#search').value.trim().toLowerCase();
   for (const s of state.sessions.filter(s => s.title.toLowerCase().includes(term))) {
     const button = el('button', `session ${s.id === current?.id ? 'selected' : ''} ${busy(s) ? 'busy' : ''}`);
+    button.disabled=!!disconnected;
     button.dataset.sessionId = s.id; button.title = s.title; button.setAttribute('aria-current',s.id === current?.id ? 'true' : 'false');
     button.append(el('span','session-symbol',s.status === 'waiting' ? '◉' : '◌'));
-    const visibleStatus = ['running','waiting','stopping','interrupted'].includes(s.status) ? statusNames[s.status] : '';
+    const visibleStatus = ['running','waiting','stopping','interrupted','error','disconnected'].includes(s.status) ? statusNames[s.status] : '';
     const label = el('div'); label.append(el('span','session-name',s.title),el('small','', date(s.updatedAt) + (visibleStatus ? ` · ${visibleStatus}` : ''))); button.append(label);
+    if (attention.has(s.id)) label.append(el('span','session-attention',attention.get(s.id)));
     button.onclick = () => attempt(() => select(s.id));
     button.oncontextmenu = event => { event.preventDefault(); openSessionMenu(s.id, event.clientX, event.clientY); };
     button.onkeydown = event => {
@@ -84,7 +126,7 @@ async function deleteSession(id) {
   if (wasCurrent) await flushDraft();
   if (!(await api.delete(id))) return;
   toast('已归档到本地，可在设置中恢复');
-  drafts.delete(id);
+  drafts.delete(id); pendingAttachments.delete(id); draftRevisions.delete(id);
   state.sessions = state.sessions.filter(s => s.id !== id);
   if (wasCurrent) {
     clearTimeout(draftTimer); current = null; $('#prompt').value = ''; $('#messages').replaceChildren(); approvalsSignature = '';
@@ -94,8 +136,18 @@ async function deleteSession(id) {
 }
 async function flushDraft() {
   clearTimeout(draftTimer);
-  if (!current || !drafts.has(current.id)) return;
-  const id = current.id, draft = drafts.get(id); await api.draft({ id,draft });
+  if (!current || disconnected || current.id===sendingId) return;
+  await saveDraft(current.id);
+}
+function saveDraft(id) {
+  if (disconnected || (!drafts.has(id) && !pendingAttachments.has(id))) return Promise.resolve();
+  const payload={id,draft:drafts.get(id) ?? '',attachments:pendingAttachments.get(id) || []};
+  const write=(draftWrites.get(id) || Promise.resolve()).catch(()=>{}).then(()=>api.draft(payload));
+  draftWrites.set(id,write);
+  return write.finally(()=>{if(draftWrites.get(id)===write)draftWrites.delete(id);});
+}
+function queueDraft() {
+  clearTimeout(draftTimer); draftTimer=setTimeout(()=>attempt(flushDraft),350);
 }
 async function select(id) {
   const request = ++selectionRequest;
@@ -104,6 +156,9 @@ async function select(id) {
   const selected = await api.get(id);
   if (request !== selectionRequest) return;
   current = selected;
+  if (!drafts.has(id)) drafts.set(id,selected.draft || '');
+  if (!pendingAttachments.has(id)) pendingAttachments.set(id,selected.draftAttachments || []);
+  attention.delete(id); renderAttention();
   $('#prompt').value = drafts.has(id) ? drafts.get(id) : selected.draft || '';
   $('#messages').replaceChildren(); approvalsSignature = ''; render(); list(); $('#feed').scrollTop = $('#feed').scrollHeight; $('#prompt').focus();
 }
@@ -148,7 +203,7 @@ function updateScrollButton() {
 }
 function toolDetails(message) {
   const details=el('details','tool'); details.open=openTools.has(message.id);
-  const summary=el('summary','',`◇ ${message.name}`); summary.append(el('span','tool-state',{running:'运行中',done:'已完成',error:'失败',interrupted:'已停止',unknown:'已结束'}[message.status]||''));
+  const summary=el('summary','',`◇ ${message.name}`); summary.append(el('span','tool-state',{running:'运行中',done:'已完成',error:'失败',interrupted:'已停止',unknown:'已结束',disconnected:'连接中断'}[message.status]||''));
   details.append(summary,el('pre','',JSON.stringify(message.input,null,2)+(message.text ? '\n\n'+message.text : '')));
   details.ontoggle=()=>{details.open ? openTools.add(message.id) : openTools.delete(message.id);requestAnimationFrame(updateScrollButton);};
   return details;
@@ -181,6 +236,12 @@ function activityCard() {
   const time=el('span','activity-time'); time.setAttribute('aria-live','off');
   row.append(spinner,title,time); const note=el('p','activity-note'); note.hidden=true; card.append(row,note); return card;
 }
+function cachedMessage(message, className) {
+  const key=`${message.id}:${className}`, signature=JSON.stringify(message), cached=renderedMessages.get(key);
+  if (cached?.signature===signature) return cached.node;
+  const node=message.role==='assistant' ? markdownBody(message.text,className) : message.role==='tool' ? toolDetails(message) : el('div',className,message.text);
+  renderedMessages.set(key,{signature,node}); return node;
+}
 function renderMessages() {
   const container = $('#messages'), feed = $('#feed');
   const atEnd = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 90;
@@ -190,8 +251,13 @@ function renderMessages() {
     else if (turn) turn.items.push(message);
     else turns.push({id:message.id,user:null,items:[message]});
   }
-  container.replaceChildren();
+  if (renderedSession!==current?.id) { renderedTurns.clear(); renderedMessages.clear(); renderedSession=current?.id; }
+  const liveTurns=new Set();
   for (const item of turns) {
+    liveTurns.add(item.id);
+    const activeTurn=busy(current) && item===turns.at(-1);
+    const signature=JSON.stringify([item.user,item.items,!!activeTurn]), cached=renderedTurns.get(item.id);
+    if (cached?.signature===signature && cached.node.parentNode===container) continue;
     const wrapper=el('section','conversation-turn'); wrapper.dataset.turnId=item.id;
     if (item.user) {
       const question=el('article','message user turn-question'); question.dataset.messageId=item.user.id;
@@ -206,7 +272,6 @@ function renderMessages() {
       }
       wrapper.append(questionLabel,question);
     }
-    const activeTurn=busy(current) && item===turns.at(-1);
     if (item.items.length || activeTurn) {
       const assistantText=item.items.filter(message=>message.role==='assistant').map(message=>message.text).join('\n\n');
       const answer=el('article','message assistant turn-answer'); answer.dataset.messageId=item.items[0]?.id || `pending-${item.id}`;
@@ -219,28 +284,30 @@ function renderMessages() {
         const summary=el('summary','',`执行过程 · ${toolCount} 个步骤`), processState=el('span','process-state',process.open ? '点击收起' : '点击展开'); summary.append(processState);
         const processBody=el('div','execution-body');
         for (const message of item.items.slice(0,lastTool+1)) {
-          if (message.role==='assistant' && message.text) processBody.append(markdownBody(message.text,'process-text'));
-          else if (message.role==='tool') processBody.append(toolDetails(message));
-          else if (message.role==='notice') processBody.append(el('div','process-notice',message.text));
+          if (message.role==='assistant' && message.text) processBody.append(cachedMessage(message,'process-text'));
+          else if (message.role==='tool') processBody.append(cachedMessage(message,'tool'));
+          else if (message.role==='notice') processBody.append(cachedMessage(message,'process-notice'));
         }
         process.append(summary,processBody); process.ontoggle=()=>{processState.textContent=process.open ? '点击收起' : '点击展开';process.open ? openProcessTurns.add(item.id) : openProcessTurns.delete(item.id);requestAnimationFrame(updateScrollButton);}; answer.append(process);
       }
       const finalItems=lastTool>=0 ? item.items.slice(lastTool+1) : item.items;
       const final=el('div','answer-content');
       for (const message of finalItems) {
-        if (message.role==='assistant' && message.text) final.append(markdownBody(message.text,'body'));
-        else if (message.role==='notice') final.append(el('div','answer-notice',message.text));
-        else if (message.role==='tool') final.append(toolDetails(message));
+        if (message.role==='assistant' && message.text) final.append(cachedMessage(message,'body'));
+        else if (message.role==='notice') final.append(cachedMessage(message,'answer-notice'));
+        else if (message.role==='tool') final.append(cachedMessage(message,'tool'));
       }
       if (final.childNodes.length) answer.append(final);
       if (activeTurn) answer.append(activityCard());
       wrapper.append(answerLabel,answer);
     }
-    container.append(wrapper);
+    if (cached?.node.parentNode===container) cached.node.replaceWith(wrapper); else container.append(wrapper);
+    renderedTurns.set(item.id,{signature,node:wrapper});
   }
-  clearInterval(activityTimer); activityTimer=null;
+  for (const [id,cached] of renderedTurns) if (!liveTurns.has(id)) {cached.node.remove();renderedTurns.delete(id);}
   updateActivity();
-  if (busy(current)) activityTimer=setInterval(updateActivity,1000);
+  if (busy(current) && !activityTimer) activityTimer=setInterval(updateActivity,1000);
+  else if (!busy(current)) {clearInterval(activityTimer);activityTimer=null;}
   if (atEnd) feed.scrollTop = feed.scrollHeight;
   updateScrollButton();
 }
@@ -248,7 +315,7 @@ function addPending(items, sessionId = current?.id) {
   if (!sessionId || !items?.length) return;
   const existing=pendingAttachments.get(sessionId) || [], merged=[...existing];
   for (const item of items) if (!merged.some(value => value.relativePath === item.relativePath)) merged.push(item);
-  pendingAttachments.set(sessionId,merged); render();
+  pendingAttachments.set(sessionId,merged); if(sessionId===current?.id){queueDraft();render(false);}else attempt(()=>saveDraft(sessionId));
   const copied=items.filter(item => item.copied).length;
   toast(copied ? `${items.length} 个文件已添加；其中 ${copied} 个已复制到当前工作目录` : `${items.length} 个工作目录文件已添加`);
 }
@@ -258,7 +325,7 @@ function renderPending() {
   for (const item of items) {
     const chip=el('div','pending-chip'), name=localPathButton(item.relativePath), remove=el('button','','×');
     name.classList.add('pending-path'); name.querySelector('.local-path-value').textContent=`▱ ${item.name}`; remove.type='button'; remove.setAttribute('aria-label',`移除 ${item.name}`);
-    remove.onclick=()=>{const next=(pendingAttachments.get(current.id)||[]).filter(value=>value.relativePath!==item.relativePath);if(next.length)pendingAttachments.set(current.id,next);else pendingAttachments.delete(current.id);render();};
+    remove.onclick=()=>{const next=(pendingAttachments.get(current.id)||[]).filter(value=>value.relativePath!==item.relativePath);pendingAttachments.set(current.id,next);queueDraft();render(false);};
     chip.append(name,remove); container.append(chip);
   }
 }
@@ -292,7 +359,7 @@ function approvals() {
     deny.onclick = () => submit(false); allow.onclick = () => submit(true); actions.append(deny,allow); card.append(actions); $('#approvals').append(card);
   }
 }
-function render() {
+function render(messages = true) {
   const active = busy(current);
   $('#title').textContent = current?.title || '开始一段新对话';
   $('#workspace').textContent = current?.cwd || '选择文件夹，让 Claude 了解你的项目'; $('#workspace').title = current?.cwd || '';
@@ -301,16 +368,17 @@ function render() {
   $('#prompt').disabled = false;
   const running = active || sending;
   const hasAttachments = !!current && !!pendingAttachments.get(current.id)?.length;
-  $('#send').disabled = active ? current.status === 'stopping' : sending || (!$('#prompt').value.trim() && !hasAttachments);
-  $('#send').textContent = active ? current.status === 'stopping' ? '正在停止…' : '■ 运行中…' : sending ? '正在发送…' : '发送 ↑';
+  $('#send').disabled = !!disconnected || (active ? current.status === 'stopping' : sending || (!$('#prompt').value.trim() && !hasAttachments));
+  $('#send').textContent = disconnected ? '连接中断' : active ? current.status === 'stopping' ? '正在停止…' : '■ 停止生成' : sending ? '正在发送…' : '发送 ↑';
   $('#send').classList.toggle('running',running);
   $('#send').title = active && current.status !== 'stopping' ? '点击停止当前回答' : '';
   $('#send').setAttribute('aria-label',active && current.status !== 'stopping' ? '停止当前回答' : '发送消息');
-  $('#composer-hint').textContent = active ? current.status === 'waiting' ? '等待你的确认后继续' : current.status === 'stopping' ? '正在停止…' : current.activity || 'Claude 正在处理，你可以先编辑下一条消息' : current ? '在当前工作文件夹中继续对话' : state.settings.defaultCwd ? '发送后将按默认设置创建对话' : '输入需求，发送时选择工作文件夹';
+  $('#composer-hint').textContent = disconnected ? '连接中断，草稿暂不能保存，请先复制' : active ? current.status === 'waiting' ? '等待你的确认后继续' : current.status === 'stopping' ? '正在停止…' : current.activity || 'Claude 正在处理，你可以先编辑下一条消息' : current ? '在当前工作文件夹中继续对话' : state.settings.defaultCwd ? '发送后将按默认设置创建对话' : '输入需求，发送时选择工作文件夹';
   $('#usage').textContent = current?.usage?.duration ? `本次 ${(current.usage.duration/1000).toFixed(1)} 秒` : '';
   $('#send-key-hint').textContent = state.settings.sendKey === 'ctrl-enter' ? 'Enter 换行 · Ctrl + Enter 发送' : 'Enter 发送 · Ctrl + Enter 换行';
-  $('#attach-files').disabled = !current || sending;
-  renderMessages(); renderPending(); approvals();
+  $('#attach-files').disabled = !!disconnected || !current || sending;
+  $('#new-chat').disabled = !!disconnected; $('#welcome-new').disabled=!!disconnected;
+  if (messages) renderMessages(); renderPending(); approvals();
 }
 function newDialog() { $('#new-cwd').value = state.settings.defaultCwd || current?.cwd || ''; $('#new-model').value = state.settings.model || ''; $('#new-error').textContent = ''; $('#new-dialog').showModal(); }
 async function renameDialog(id) {
@@ -376,20 +444,22 @@ async function refreshArchives() {
   }
 }
 async function archiveDialog() { archiveReturnToSettings = $('#settings-dialog').open; $('#settings-dialog').close(); $('#archive-dialog').showModal(); await refreshArchives(); }
-function banner(value) { $('#banner').replaceChildren(); $('#banner').hidden = !value; if (!value) return; $('#banner').append(document.createTextNode(value)); const button = el('button','','打开设置'); button.onclick = settingsDialog; $('#banner').append(button); }
+function banner(value) { value=disconnected || value; $('#banner').replaceChildren(); $('#banner').hidden = !value; if (!value) return; $('#banner').append(document.createTextNode(value)); if(disconnected){$('#banner').setAttribute('role','alert');return;} const button = el('button','','打开设置'); button.onclick = settingsDialog; $('#banner').append(button); }
 async function check(path) {
   $('#check-cli').disabled = true; $('#check-result').textContent = '正在检测…';
-  try { const info = await api.check(path); $('#check-result').textContent = info.version + ' · ' + info.path; $('#connection-dot').classList.add('connected'); banner(state.smoke ? '当前为自动化测试模式，不会调用真实 Claude。' : ''); return true; }
+  try { const info = await api.check(path); $('#check-result').textContent = info.version + ' · ' + info.path; if(!disconnected)$('#connection-dot').classList.add('connected'); banner(state.smoke ? '当前为自动化测试模式，不会调用真实 Claude。' : ''); return true; }
   catch (e) { $('#check-result').textContent = e.message; $('#connection-dot').classList.remove('connected'); banner(e.message); return false; }
   finally { $('#check-cli').disabled = false; }
 }
 async function sendMessage() {
-  if (busy(current) || sending) return;
+  if (disconnected || busy(current) || sending) return;
   const prompt = $('#prompt').value, attachments=current ? pendingAttachments.get(current.id) || [] : [];
   if (!prompt.trim() && !attachments.length) return;
-  sending = true; clearTimeout(draftTimer); render();
+  const source=current, revision=source ? draftRevisions.get(source.id) || 0 : composerRevision, selection=selectionRequest;
+  let id=source?.id;
+  sending = true; sendingId=id; clearTimeout(draftTimer); render(false);
   try {
-    if (!current) {
+    if (!source) {
       if (!state.settings.defaultCwd) {
         sendAfterCreate = true;
         newDialog();
@@ -398,13 +468,27 @@ async function sendMessage() {
       }
       const created = await api.create({cwd:state.settings.defaultCwd,model:state.settings.model || ''}), {messages,draft,...summary} = created;
       state.sessions = [summary,...state.sessions.filter(s => s.id !== summary.id)];
-      current = created; $('#messages').replaceChildren(); approvalsSignature = ''; list();
+      id=created.id; sendingId=id;
+      const stillHere=!current && selection===selectionRequest;
+      drafts.set(id,stillHere ? $('#prompt').value : prompt); pendingAttachments.set(id,[]);
+      if(stillHere){current = created; $('#messages').replaceChildren(); approvalsSignature = ''; list();}
     }
-    const id = current.id;
-    const result = await api.send({id,prompt,attachments}); drafts.delete(id); pendingAttachments.delete(id);
-    if (current?.id === id) { current = result; $('#prompt').value = ''; }
+    await saveDraft(id);
+    const version=sessionVersions.get(id) || 0;
+    const result = await api.send({id,prompt,attachments});
+    const unchanged=source ? (draftRevisions.get(id) || 0)===revision : composerRevision===revision;
+    if (unchanged) drafts.set(id,'');
+    pendingAttachments.set(id,(pendingAttachments.get(id) || []).filter(item=>!attachments.includes(item)));
+    if (current?.id === id) {
+      if (!disconnected && (sessionVersions.get(id) || 0)===version) current = result;
+      if (unchanged && $('#prompt').value===prompt) $('#prompt').value = '';
+    }
   } catch (e) { toast(e.message); }
-  finally { sending = false; render(); $('#prompt').focus(); }
+  finally {
+    sending = false; sendingId=null;
+    if(id && !disconnected) await attempt(()=>saveDraft(id));
+    render(); $('#prompt').focus();
+  }
 }
 $('#new-chat').onclick = () => attempt(newDialog);
 $('#welcome-new').onclick = () => current ? $('#prompt').focus() : attempt(newDialog);
@@ -464,8 +548,9 @@ $('#prompt').addEventListener('keydown', event => {
   }
 });
 $('#prompt').oninput = () => {
-  if (current) { drafts.set(current.id,$('#prompt').value); clearTimeout(draftTimer); draftTimer = setTimeout(() => attempt(flushDraft),350); }
-  render();
+  composerRevision++;
+  if (current) { drafts.set(current.id,$('#prompt').value); draftRevisions.set(current.id,(draftRevisions.get(current.id)||0)+1); queueDraft(); }
+  render(false);
 };
 $('#new-dialog').addEventListener('close', () => sendAfterCreate = false);
 $('#feed').onscroll = updateScrollButton;
@@ -478,15 +563,20 @@ document.addEventListener('click', event => {
 });
 document.addEventListener('keydown', event => { if (event.ctrlKey && event.key.toLowerCase() === 'n' && !document.querySelector('dialog[open]')) { event.preventDefault(); attempt(newDialog); } });
 window.addEventListener('blur', () => attempt(flushDraft));
+window.addEventListener('focus',()=>{if(current && attention.delete(current.id)){renderAttention();list();}});
 api.onEvent(({type,data}) => {
+  if (type==='backend-disconnected') {connectionLost(data);return;}
+  if (disconnected && ['list','session','approvals'].includes(type)) return;
   if (type === 'list') {
+    trackAttention(data);
     state.sessions = data;
     if (current && !state.sessions.some(session => session.id === current.id)) {
       clearTimeout(draftTimer); current = null; $('#prompt').value = ''; $('#messages').replaceChildren(); approvalsSignature = '';
+      render();
     }
-    list(); render();
+    renderAttention(); list();
   }
-  if (type === 'session' && data.id === current?.id) { current = data; render(); }
+  if (type === 'session') {sessionVersions.set(data.id,(sessionVersions.get(data.id)||0)+1);if(data.id === current?.id){current = data; render();}}
   if (type === 'fileDrag') {
     $('.composer').classList.toggle('file-dragging',data.type === 'enter' || data.type === 'over');
     if (data.type === 'drop') attempt(async () => {

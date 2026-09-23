@@ -36,7 +36,7 @@ try {
   assert.equal(await page.locator('#session-model').count(),1);
   assert.equal(await page.locator('.header-actions').count(),0);
   assert.equal(await page.locator('#status').count(),0);
-  assert.equal(await page.locator('#send').isDisabled(),false);assert.equal(await page.locator('#send').innerText(),'■ 运行中…');
+  assert.equal(await page.locator('#send').isDisabled(),false);assert.equal(await page.locator('#send').innerText(),'■ 停止生成');
   await page.locator('.session.selected').click({button:'right'});
   assert.equal(await page.locator('#context-delete').isDisabled(),true);
   assert.equal(await page.locator('#context-model').isDisabled(),true);

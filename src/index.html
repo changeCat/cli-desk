@@ -13,6 +13,7 @@
   <main>
     <header><div class="heading"><h1 id="title">开始一段新对话</h1><button id="workspace" title="工作文件夹" disabled>选择文件夹，让 Claude 了解你的项目</button></div></header>
     <div id="banner" hidden></div>
+    <div id="task-notice" class="task-notice" role="status" hidden></div>
     <section id="feed" aria-label="对话内容" tabindex="0"><div id="welcome"><img class="welcome-icon" src="icon.svg" alt="CLI Desk"><p class="eyebrow">专注于眼前的事</p><h2>想一起完成什么？</h2><p>直接在下方输入需求即可开始。<br>让 Claude 帮你读代码、解决问题、实现想法。</p><button id="welcome-new" class="primary">设置工作文件夹与模型 <span>↗</span></button><div class="welcome-foot">使用你已配置的 Claude Code · 无需打开命令行</div></div><div id="messages"></div></section>
     <button id="scroll-bottom" hidden>↓ 回到最新消息</button>
     <section id="approvals" aria-label="等待确认的操作"></section>

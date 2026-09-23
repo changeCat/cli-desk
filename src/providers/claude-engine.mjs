@@ -8,6 +8,10 @@ export class Engine {
     this.runs = new Map(); this.approvals = new Map();
   }
   publish(s, persist = true) { if (persist) this.store.save(s); this.emit('session', s); }
+  publishCleanup(s) {
+    try { this.publish(s); }
+    catch { this.publish(s, false); this.emit('error', '保存对话失败，请检查磁盘空间或目录权限。当前内容仍保留在窗口中，可复制或导出。'); }
+  }
   start(id, text, attachments = []) {
     const s = this.store.get(id);
     if (this.runs.has(id)) throw new Error('此对话正在运行，请等待完成或停止任务。');
@@ -15,14 +19,19 @@ export class Engine {
     if (typeof text !== 'string' || (!text.trim() && !attachments.length) || text.length > 100000) throw new Error('请输入消息或添加附件（消息最多 100,000 字符）。');
     if (!fs.existsSync(s.cwd) || !fs.statSync(s.cwd).isDirectory()) throw new Error('工作文件夹不存在，请重新选择或新建对话。');
     const cli = this.resolver(this.store.settings.cliPath);
+    const previous = {...s,messages:[...s.messages]};
     const run = { controller: new AbortController(), child: null, stopped: false, query: null, dirty: false, streamId: null, tools: new Map(), textIds: new Map(), finished: false };
     this.runs.set(id, run);
-    s.status = 'running'; s.updatedAt = Date.now(); s.draft = '';
+    s.status = 'running'; s.updatedAt = Date.now(); s.draft = ''; s.draftAttachments = [];
     s.runStartedAt = s.updatedAt; s.lastEventAt = null; s.activity = '正在启动 Claude…'; s.usage = null;
     const userText = text.trim() || '请查看并处理附件。';
     if (!s.messages.some(m => m.role === 'user')) s.title = userText.slice(0, 30);
     s.messages.push({ id: randomUUID(), role: 'user', text: userText, attachments, at: Date.now() });
-    try { this.publish(s); } catch (error) { this.runs.delete(id); s.status = 'error'; throw error; }
+    try { this.publish(s); } catch (error) {
+      this.runs.delete(id);
+      for (const key of Object.keys(s)) if (!Object.hasOwn(previous,key)) delete s[key];
+      Object.assign(s,previous); throw error;
+    }
     const attachmentPrompt = attachments.length ? `\n\n附件已放在当前工作目录中。请按要求读取或修改；修改会直接保存到这些路径：\n${attachments.map(item => `- ${item.relativePath}`).join('\n')}` : '';
     run.done = this.execute(s, userText + attachmentPrompt, cli, run);
     return s;
@@ -49,7 +58,8 @@ export class Engine {
         if (!this.approvals.has(request.id)) return;
         this.approvals.delete(request.id); options.signal?.removeEventListener('abort', abort);
         s.status = run.stopped ? 'stopping' : (this.pending(s.id).length ? 'waiting' : 'running');
-        this.emit('approvals', this.pending()); this.publish(s); resolve(response);
+        this.emit('approvals', this.pending());
+        try { this.publishCleanup(s); } finally { resolve(response); }
       };
       const abort = () => finish({ behavior: 'deny', message: '操作已取消', interrupt: true });
       this.approvals.set(request.id, { request, finish });
@@ -80,7 +90,7 @@ export class Engine {
     }, 60000);
     const timer = setInterval(() => {
       if (!run.dirty) return; run.dirty = false;
-      try { this.publish(s); } catch { this.stop(s.id); this.emit('error', '保存对话失败，请检查磁盘空间或目录权限。'); }
+      try { this.publish(s); } catch { this.stop(s.id); }
     }, 500);
     try {
       const selectedModel = Object.hasOwn(s, 'model') ? s.model : this.store.settings.model;
@@ -167,7 +177,7 @@ export class Engine {
       const child = run.child; if (child && child.exitCode === null) setTimeout(() => killTree(child), 3000).unref();
       for (const tool of run.tools.values()) if (tool.status === 'running') tool.status = run.stopped ? 'interrupted' : 'unknown';
       s.activity = ''; s.runStartedAt = null; s.lastEventAt = null; s.updatedAt = Date.now(); run.finished = true; this.runs.delete(s.id);
-      try { this.publish(s); } catch { this.emit('error', '保存失败，请检查磁盘空间。'); }
+      this.publishCleanup(s);
     }
   }
   cleanError(text) {
@@ -183,10 +193,11 @@ export class Engine {
   }
   stop(id) {
     const run = this.runs.get(id); if (!run || run.stopped) return;
-    run.stopped = true; const s = this.store.get(id); s.status = 'stopping'; this.publish(s);
-    for (const p of [...this.approvals.values()]) if (p.request.sessionId === id) p.finish({ behavior: 'deny', message: '用户停止任务', interrupt: true });
+    run.stopped = true; const s = this.store.get(id); s.status = 'stopping';
     run.controller.abort();
     run.stopTimer = setTimeout(() => { killTree(run.child); try { run.query?.close(); } catch {} }, 2500);
+    for (const p of [...this.approvals.values()]) if (p.request.sessionId === id) p.finish({ behavior: 'deny', message: '用户停止任务', interrupt: true });
+    this.publishCleanup(s);
   }
   async shutdown() {
     const runs = [...this.runs.entries()]; for (const [id] of runs) this.stop(id);

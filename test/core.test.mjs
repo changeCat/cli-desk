@@ -120,6 +120,39 @@ test('fixture provider publishes startup, thinking, retry and tool activity with
 test('invalid CLI fails before consuming the user draft',()=>{
   const {dir,store}=fixture(); const s=store.create(dir);s.draft='保留草稿';const engine=new Engine(store,fakeQuery,()=>{},()=>{throw new Error('not found')});assert.throws(()=>engine.start(s.id,'hello'));assert.equal(s.draft,'保留草稿');assert.equal(s.messages.length,0);
 });
+
+test('fixture disk failure cannot prevent cancelling an approval or releasing a run',async()=>{
+  const {dir,store}=fixture(), s=store.create(dir), events=[];
+  const engine=new Engine(store,fakeQuery,(type,data)=>events.push({type,data}),()=> 'fixture');
+  engine.start(s.id,'fixture cancellation');await until(()=>engine.pending().length);
+  const run=engine.runs.get(s.id), save=store.save;
+  store.save=()=>{throw new Error('fixture: disk full');};
+  try {
+    assert.doesNotThrow(()=>engine.stop(s.id));assert.equal(run.controller.signal.aborted,true);
+    await until(()=>!engine.runs.size);
+    assert.equal(engine.pending().length,0);assert.equal(s.status,'interrupted');
+    assert.ok(s.messages.some(m=>m.role==='assistant'));assert.ok(events.some(e=>e.type==='error'));
+  } finally {store.save=save;await engine.shutdown();}
+});
+
+test('fixture disk failure while answering a permission still resolves the response',async()=>{
+  const {dir,store}=fixture(), s=store.create(dir);
+  const engine=new Engine(store,fakeQuery,()=>{},()=> 'fixture');
+  engine.start(s.id,'fixture answer');await until(()=>engine.pending().length);
+  const save=store.save;store.save=()=>{throw new Error('fixture: disk full');};
+  try {
+    assert.doesNotThrow(()=>engine.answer(engine.pending()[0].id,false));
+    await until(()=>!engine.runs.size);assert.equal(engine.pending().length,0);
+  } finally {store.save=save;await engine.shutdown();}
+});
+
+test('failed initial save preserves the draft and attachment metadata without starting a run',()=>{
+  const {dir,store}=fixture(), s=store.create(dir);s.draft='待发送';s.draftAttachments=[{name:'fixture.txt',relativePath:'fixture.txt',size:1}];
+  const before=structuredClone(s);store.save=()=>{throw new Error('fixture: disk full');};
+  const engine=new Engine(store,()=>{throw new Error('must not start')},()=>{},()=> 'fixture');
+  assert.throws(()=>engine.start(s.id,'待发送',s.draftAttachments),/disk full/);
+  assert.deepEqual(s,before);assert.equal(engine.runs.size,0);
+});
 test('standard npm shim resolves without invoking a shell',()=>{
   const {dir}=fixture();const shim=path.join(dir,'claude.cmd'), js=path.join(dir,'node_modules','@anthropic-ai','claude-code','cli.js');fs.mkdirSync(path.dirname(js),{recursive:true});fs.writeFileSync(shim,'');fs.writeFileSync(js,'');assert.equal(resolveCli(shim),js);assert.throws(()=>resolveCli(path.join(dir,'missing.exe')));
 });

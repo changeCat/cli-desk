@@ -18,15 +18,18 @@ function inside(root, target) {
   return relative && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
 }
 function attachmentName(value) { return path.basename(value).replace(/[<>:"/\\|?*\u0000-\u001f]/g,'_').slice(0,180) || '附件'; }
-function validateAttachments(session, value) {
+function validateAttachments(session, value, checkFiles = true) {
   if (value == null) return [];
   if (!Array.isArray(value) || value.length > attachmentLimits.count) throw new Error(`每次最多添加 ${attachmentLimits.count} 个文件`);
   let total = 0;
   return value.map(item => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('无效的附件');
     const relativePath = text(item.relativePath,32768).replace(/\\/g,'/'), target = path.resolve(session.cwd,relativePath);
-    if (!fs.existsSync(target) || !fs.statSync(target).isFile() || !inside(fs.realpathSync(session.cwd),fs.realpathSync(target))) throw new Error('附件必须位于当前工作文件夹中');
-    const size = fs.statSync(target).size; total += size;
+    if (path.isAbsolute(relativePath) || !inside(session.cwd,target)) throw new Error('附件必须位于当前工作文件夹中');
+    if (checkFiles && (!fs.existsSync(target) || !fs.statSync(target).isFile() || !inside(fs.realpathSync(session.cwd),fs.realpathSync(target)))) throw new Error('附件不存在或不在当前工作文件夹中，请移除后重新添加');
+    const size = checkFiles ? fs.statSync(target).size : item.size;
+    if (!Number.isSafeInteger(size) || size < 0) throw new Error('无效的附件大小');
+    total += size;
     if (size > attachmentLimits.each || total > attachmentLimits.total) throw new Error('附件大小超出限制（单个 25 MB，总计 50 MB）');
     return {name:attachmentName(item.name || target),relativePath,size,copied:!!item.copied};
   });
@@ -97,7 +100,12 @@ export function createService({root, version, smoke = false, emit, fetcher = glo
     archives: () => store.archives(),
     restore: key => { const s = store.restore(text(key, 240)); emit('list', store.list()); return s; },
     purge: key => store.purge(text(key, 240)),
-    draft: ({id, draft}) => { const s = store.get(text(id, 80)); s.draft = text(draft); store.save(s); },
+    draft: ({id, draft, attachments}) => {
+      const s = store.get(text(id, 80)), value = text(draft);
+      const files = attachments === undefined ? s.draftAttachments || [] : validateAttachments(s,attachments,false);
+      const next = {...s,draft:value,draftAttachments:files}; store.save(next);
+      s.draft = value; s.draftAttachments = files;
+    },
     attach: ({id, paths}) => stageAttachments(store,id,paths),
     send: ({id, prompt, attachments}) => {
       const session=store.get(text(id,80));

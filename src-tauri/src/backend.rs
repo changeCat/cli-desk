@@ -12,7 +12,7 @@ use std::{
     thread,
     time::Duration,
 };
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::oneshot;
 
 type Reply = Result<Value, String>;
@@ -144,12 +144,35 @@ impl Backend {
         });
         let app = app.clone();
         thread::spawn(move || {
+            let mut statuses: HashMap<String, String> = HashMap::new();
             for line in BufReader::new(stdout).lines() {
                 let Ok(line) = line else { break };
                 let Ok(value) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
                 if let Some(event) = value.get("event") {
+                    if event["type"] == "session" {
+                        if let (Some(id), Some(status)) = (
+                            event["data"]["id"].as_str(),
+                            event["data"]["status"].as_str(),
+                        ) {
+                            let previous = statuses.insert(id.to_string(), status.to_string());
+                            let changed = previous.as_deref() != Some(status);
+                            let finished = previous
+                                .as_deref()
+                                .is_some_and(|s| ["running", "waiting", "stopping"].contains(&s))
+                                && ["idle", "error"].contains(&status);
+                            if changed && (status == "waiting" || finished) {
+                                if let Some(win) = app.get_webview_window("main") {
+                                    if !win.is_focused().unwrap_or(true) {
+                                        let _ = win.request_user_attention(Some(
+                                            tauri::UserAttentionType::Informational,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
                     let _ = app.emit("desk:event", event);
                 } else if let Some(id) = value["id"].as_u64() {
                     if let Some(sender) = pending.lock().unwrap().remove(&id) {
@@ -166,7 +189,7 @@ impl Backend {
             for (_, sender) in pending.lock().unwrap().drain() {
                 let _ = sender.send(Err("Node 后台已退出，请重新打开应用".into()));
             }
-            let _ = app.emit("desk:event",json!({"type":"error","data":"Node 后台已退出。请重新打开应用，已保存的记录会保留。"}));
+            let _ = app.emit("desk:event",json!({"type":"backend-disconnected","data":"后台连接已中断，请退出后重新打开应用。已保存的记录会保留；当前未保存的内容请先复制。"}));
         });
         *slot = Some(client.clone());
         Ok(client)
