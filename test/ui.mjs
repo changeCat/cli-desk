@@ -2,6 +2,7 @@ import { launchDesktop } from './desktop.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+const {version}=JSON.parse(fs.readFileSync(new URL('../package.json',import.meta.url),'utf8'));
 const root=path.resolve('test-artifacts');fs.mkdirSync(root,{recursive:true});
 const data=fs.mkdtempSync(path.join(root,'ui-'));
 fs.writeFileSync(path.join(data,'settings.json'),JSON.stringify({cliPath:'',defaultCwd:data,model:'claude-test-model-id',sendKey:'enter'}));
@@ -70,7 +71,7 @@ try {
   await page.locator('.session.selected').click({button:'right'});await page.click('#context-rename');await page.fill('#rename-input','待归档对话');await page.click('#rename-form button[type=submit]');
   await page.locator('.session').filter({hasText:'请帮我分析这个项目'}).click();await page.waitForFunction(()=>document.querySelector('#prompt').value==='准备中的草稿');
   await page.click('#settings-button'); assert.equal(await page.inputValue('#send-key'),'enter');
-  assert.equal(await page.locator('#check-update').isVisible(),true);assert.equal(await page.locator('#download-update').isVisible(),true);await page.click('#check-update');await page.waitForFunction(()=>!document.querySelector('#check-update').disabled);assert.equal(await page.locator('#update-latest').innerText(),'1.0.3');
+  assert.equal(await page.locator('#check-update').isVisible(),true);assert.equal(await page.locator('#download-update').isVisible(),true);await page.click('#check-update');await page.waitForFunction(()=>!document.querySelector('#check-update').disabled);assert.equal(await page.locator('#update-latest').innerText(),version);
   const settingsLayout=await page.evaluate(()=>{const dialog=document.querySelector('#settings-dialog').getBoundingClientRect(),input=document.querySelector('#cli-path').getBoundingClientRect(),browse=document.querySelector('#pick-cli').getBoundingClientRect(),check=document.querySelector('#check-cli').getBoundingClientRect();return{width:dialog.width,tops:[input.top,browse.top,check.top]};});
   assert.ok(settingsLayout.width>=800,`设置窗口应加宽，实际 ${settingsLayout.width}`);assert.ok(Math.max(...settingsLayout.tops)-Math.min(...settingsLayout.tops)<2,'Claude Code 路径、浏览和检测连接应在同一行');
   assert.equal(await page.locator('.settings-field-help').count(),0);
