@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import { validatePermissionMode, permissionLabel } from '../core/permissions.mjs';
 import { resolveCli, environment, killTree, spawnCli } from '../platform/cli-runtime.mjs';
 
 export class Engine {
@@ -19,11 +20,13 @@ export class Engine {
     if (typeof text !== 'string' || (!text.trim() && !attachments.length) || text.length > 100000) throw new Error('请输入消息或添加附件（消息最多 100,000 字符）。');
     if (!fs.existsSync(s.cwd) || !fs.statSync(s.cwd).isDirectory()) throw new Error('工作文件夹不存在，请重新选择或新建对话。');
     const cli = this.resolver(this.store.settings.cliPath);
+    const permissionMode = validatePermissionMode(s.permissionMode ?? 'default');
     const previous = {...s,messages:[...s.messages]};
     const run = { controller: new AbortController(), child: null, stopped: false, query: null, dirty: false, streamId: null, tools: new Map(), textIds: new Map(), finished: false };
     this.runs.set(id, run);
     s.status = 'running'; s.updatedAt = Date.now(); s.draft = ''; s.draftAttachments = [];
     s.runStartedAt = s.updatedAt; s.lastEventAt = null; s.activity = '正在启动 Claude…'; s.usage = null;
+    s.activePermissionMode = null;
     const userText = text.trim() || '请查看并处理附件。';
     if (!s.messages.some(m => m.role === 'user')) s.title = userText.slice(0, 30);
     s.messages.push({ id: randomUUID(), role: 'user', text: userText, attachments, at: Date.now() });
@@ -33,6 +36,7 @@ export class Engine {
       Object.assign(s,previous); throw error;
     }
     const attachmentPrompt = attachments.length ? `\n\n附件已放在当前工作目录中。请按要求读取或修改；修改会直接保存到这些路径：\n${attachments.map(item => `- ${item.relativePath}`).join('\n')}` : '';
+    run.permissionMode = permissionMode;
     run.done = this.execute(s, userText + attachmentPrompt, cli, run);
     return s;
   }
@@ -97,7 +101,8 @@ export class Engine {
       const options = {
         cwd: s.cwd, pathToClaudeCodeExecutable: cli, env: environment(),
         settingSources: ['user', 'project', 'local'], systemPrompt: { type: 'preset', preset: 'claude_code' },
-        permissionMode: 'default', includePartialMessages: true, abortController: run.controller,
+        permissionMode: run.permissionMode, includePartialMessages: true, abortController: run.controller,
+        ...(run.permissionMode === 'bypassPermissions' ? {allowDangerouslySkipPermissions:true} : {}),
         ...(s.providerSessionId ? { resume: s.providerSessionId } : {}),
         ...(selectedModel ? { model: selectedModel } : {}),
         canUseTool: (name, input, opts) => this.permission(s, run, name, input, opts),
@@ -122,6 +127,10 @@ export class Engine {
         if (event.session_id && !s.providerSessionId) { s.providerSessionId = event.session_id; this.store.save(s); }
         s.lastEventAt = Date.now();
         run.dirty = true;
+        if (event.type === 'system' && typeof event.permissionMode === 'string' && event.permissionMode !== s.activePermissionMode) {
+          s.activePermissionMode = event.permissionMode;
+          if (event.permissionMode !== run.permissionMode) this.notice(s, `Claude 当前使用“${permissionLabel(event.permissionMode)}”，与所选“${permissionLabel(run.permissionMode)}”不同。请检查本机 CLI、模型、账号支持和权限设置。`);
+        }
         if (event.type === 'tool_progress') s.activity = `正在执行工具 · ${event.tool_name}`;
         if (event.parent_tool_use_id) continue;
         if (event.type === 'stream_event') {
@@ -186,6 +195,7 @@ export class Engine {
     return safe.slice(-6000);
   }
   explainError(text) {
+    if (/permission.?mode|auto mode|bypass.*permission|skip.*permission/i.test(text)) return `${text}\n\n请检查本机 Claude Code 版本、模型、账号及权限设置是否支持所选审批模式；也可以切回“请求批准”后重试。`;
     if (/UNKNOWN_CERTIFICATE_VERIFICATION_ERROR|certificate verification/i.test(text)) return `${text}\n\n处理建议：这是 HTTPS 证书校验问题。请检查代理、企业证书或安全软件的 HTTPS 检查；若代理环境变量只在终端中设置，请从同一终端启动 CLI Desk。`;
     if (/\b429\b|Service Unavailable/i.test(text)) return `${text}\n\n处理建议：服务暂时不可用或请求受到限制。请稍后重试，并检查账号额度、代理和服务状态。`;
     if (/Unable to connect|ECONN(?:REFUSED|RESET)|ENETUNREACH|ETIMEDOUT/i.test(text)) return `${text}\n\n处理建议：请检查网络、代理以及 Claude Code 的连接设置，然后重新发送。`;

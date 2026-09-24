@@ -1,6 +1,7 @@
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { desk as api } from './desktop.mjs';
+import { permissionModes, permissionLabel } from './core/permissions.mjs';
 
 const $ = selector => document.querySelector(selector);
 let state = { sessions:[], settings:{}, approvals:[] }, current = null, approvalsSignature = '', sending = false, composing = false;
@@ -14,6 +15,7 @@ let menuSessionId = null, editingSessionId = null, selectionRequest = 0;
 let confirmResolver = null, archiveReturnToSettings = false, sendAfterCreate = false;
 let updateAvailable = null, updating = false;
 let activityTimer;
+let permissionChanging = false;
 const latestReleaseUrl = 'https://github.com/changeCat/cli-desk/releases/latest';
 const statusNames = { idle:'就绪', running:'正在处理', waiting:'等待确认', stopping:'正在停止', error:'请求失败', interrupted:'已停止', disconnected:'连接中断' };
 const busy = s => s && ['running','waiting','stopping'].includes(s.status);
@@ -199,7 +201,9 @@ function markdownBody(value, className = 'body') {
 }
 function updateScrollButton() {
   const feed=$('#feed'), distance=Math.max(0,feed.scrollHeight-feed.scrollTop-feed.clientHeight);
-  $('#scroll-bottom').hidden=distance<120;
+  const button=$('#scroll-bottom');
+  button.hidden=distance<120;
+  button.style.bottom=`${$('main').getBoundingClientRect().bottom-feed.getBoundingClientRect().bottom+12}px`;
 }
 function toolDetails(message) {
   const details=el('details','tool'); details.open=openTools.has(message.id);
@@ -215,7 +219,12 @@ function messageLabel(role, at, copyText) {
 }
 function elapsedTime(milliseconds) {
   const seconds=Math.max(0,Math.floor(milliseconds/1000));
-  return seconds<60 ? `${seconds} 秒` : `${Math.floor(seconds/60)} 分 ${seconds%60} 秒`;
+  const parts=[];
+  if(seconds>=86400)parts.push(`${Math.floor(seconds/86400)} 天`);
+  if(seconds>=3600)parts.push(`${Math.floor(seconds/3600)%24} 时`);
+  if(seconds>=60)parts.push(`${Math.floor(seconds/60)%60} 分`);
+  parts.push(`${seconds%60} 秒`);
+  return parts.join(' ');
 }
 function updateActivity() {
   const card=$('#run-activity'); if (!card || !busy(current)) return;
@@ -235,6 +244,52 @@ function activityCard() {
   const title=el('span','activity-title'); title.setAttribute('role','status');
   const time=el('span','activity-time'); time.setAttribute('aria-live','off');
   row.append(spinner,title,time); const note=el('p','activity-note'); note.hidden=true; card.append(row,note); return card;
+}
+function closePermissionMenu() {
+  $('#permission-menu').hidden=true; $('#permission-mode').setAttribute('aria-expanded','false');
+}
+function renderPermissionSelector() {
+  const requested=current?.permissionMode || 'default';
+  const mode=busy(current) && current.activePermissionMode ? current.activePermissionMode : requested;
+  const button=$('#permission-mode');
+  button.textContent=`${permissionModes[mode]?.icon || '◇'} ${permissionLabel(mode)} ▴`;
+  button.classList.toggle('permission-full',mode==='bypassPermissions');
+  button.disabled=!current || busy(current) || sending || permissionChanging || !!disconnected;
+  button.title=!current ? '新建对话后可选择审批模式' : busy(current) ? `本次审批模式：${permissionLabel(mode)}；任务结束或停止后可修改` : '当前对话的审批模式，下次发送时生效';
+  if(button.disabled)closePermissionMenu();
+  for(const option of $('#permission-menu').querySelectorAll('[data-mode]'))option.setAttribute('aria-checked',String(option.dataset.mode===requested));
+}
+async function choosePermissionMode(mode) {
+  const session=current; closePermissionMenu();
+  if(!session || busy(session) || disconnected || permissionChanging || sending || mode===(session.permissionMode || 'default'))return;
+  permissionChanging=true; render(false);
+  try {
+    if(mode==='bypassPermissions' && !(await confirmAction({title:'启用完全访问权限？',message:`“${session.title}”将跳过常规工具审批。`,detail:'Claude 可按当前系统账户权限读取和修改文件、执行命令及访问网络，操作范围可能超出工作文件夹。此选择只对当前对话生效，并会保留到你切换模式为止；系统限制和已有权限规则仍然生效。',accept:'启用完全访问权限',danger:true,icon:'!'})))return;
+    const result=await api.permission({id:session.id,mode,confirmed:mode==='bypassPermissions'});
+    if(current?.id===session.id)current=result;
+    toast(`已切换为“${permissionLabel(mode)}”，下次发送时生效`);
+  } finally {permissionChanging=false;render(false);}
+}
+function initializePermissionSelector() {
+  const container=el('div','permission-selector'), button=el('button','permission-mode');
+  button.id='permission-mode';button.type='button';button.setAttribute('aria-haspopup','menu');button.setAttribute('aria-expanded','false');
+  const menu=el('div','permission-menu');menu.id='permission-menu';menu.hidden=true;menu.setAttribute('role','menu');menu.setAttribute('aria-label','审批模式');
+  for(const [mode,info] of Object.entries(permissionModes)) {
+    const option=el('button','permission-option');option.type='button';option.dataset.mode=mode;option.setAttribute('role','menuitemradio');
+    if(mode==='bypassPermissions')option.classList.add('permission-full');
+    const copy=el('span','permission-copy');copy.append(el('strong','',info.label),el('small','',info.description));
+    option.append(el('span','permission-icon',info.icon),copy,el('span','permission-check','✓'));
+    option.onclick=()=>attempt(()=>choosePermissionMode(mode));menu.append(option);
+  }
+  menu.append(el('p','permission-help','自动审批是否可用取决于 Claude Code、模型和账号支持。'));
+  button.onclick=()=>{menu.hidden=!menu.hidden;button.setAttribute('aria-expanded',String(!menu.hidden));if(!menu.hidden)menu.querySelector('[aria-checked="true"]')?.focus();};
+  menu.onkeydown=event=>{
+    if(event.key==='Escape'){event.preventDefault();closePermissionMenu();button.focus();}
+    if(event.key==='ArrowDown' || event.key==='ArrowUp'){event.preventDefault();const options=[...menu.querySelectorAll('button')],index=options.indexOf(document.activeElement);options[(index+(event.key==='ArrowDown'?1:-1)+options.length)%options.length].focus();}
+    if(event.key==='Tab')closePermissionMenu();
+  };
+  container.append(button,menu);$('.composer-meta').insertBefore(container,$('#composer-hint'));
+  document.addEventListener('pointerdown',event=>{if(!container.contains(event.target))closePermissionMenu();});
 }
 function cachedMessage(message, className) {
   const key=`${message.id}:${className}`, signature=JSON.stringify(message), cached=renderedMessages.get(key);
@@ -286,11 +341,10 @@ function renderMessages() {
         for (const message of item.items.slice(0,lastTool+1)) {
           if (message.role==='assistant' && message.text) processBody.append(cachedMessage(message,'process-text'));
           else if (message.role==='tool') processBody.append(cachedMessage(message,'tool'));
-          else if (message.role==='notice') processBody.append(cachedMessage(message,'process-notice'));
         }
         process.append(summary,processBody); process.ontoggle=()=>{processState.textContent=process.open ? '点击收起' : '点击展开';process.open ? openProcessTurns.add(item.id) : openProcessTurns.delete(item.id);requestAnimationFrame(updateScrollButton);}; answer.append(process);
       }
-      const finalItems=lastTool>=0 ? item.items.slice(lastTool+1) : item.items;
+      const finalItems=lastTool>=0 ? item.items.filter((message,index)=>index>lastTool || message.role==='notice') : item.items;
       const final=el('div','answer-content');
       for (const message of finalItems) {
         if (message.role==='assistant' && message.text) final.append(cachedMessage(message,'body'));
@@ -368,7 +422,7 @@ function render(messages = true) {
   $('#prompt').disabled = false;
   const running = active || sending;
   const hasAttachments = !!current && !!pendingAttachments.get(current.id)?.length;
-  $('#send').disabled = !!disconnected || (active ? current.status === 'stopping' : sending || (!$('#prompt').value.trim() && !hasAttachments));
+  $('#send').disabled = !!disconnected || permissionChanging || (active ? current.status === 'stopping' : sending || (!$('#prompt').value.trim() && !hasAttachments));
   $('#send').textContent = disconnected ? '连接中断' : active ? current.status === 'stopping' ? '正在停止…' : '■ 停止生成' : sending ? '正在发送…' : '发送 ↑';
   $('#send').classList.toggle('running',running);
   $('#send').title = active && current.status !== 'stopping' ? '点击停止当前回答' : '';
@@ -378,6 +432,7 @@ function render(messages = true) {
   $('#send-key-hint').textContent = state.settings.sendKey === 'ctrl-enter' ? 'Enter 换行 · Ctrl + Enter 发送' : 'Enter 发送 · Ctrl + Enter 换行';
   $('#attach-files').disabled = !!disconnected || !current || sending;
   $('#new-chat').disabled = !!disconnected; $('#welcome-new').disabled=!!disconnected;
+  renderPermissionSelector();
   if (messages) renderMessages(); renderPending(); approvals();
 }
 function newDialog() { $('#new-cwd').value = state.settings.defaultCwd || current?.cwd || ''; $('#new-model').value = state.settings.model || ''; $('#new-error').textContent = ''; $('#new-dialog').showModal(); }
@@ -452,7 +507,7 @@ async function check(path) {
   finally { $('#check-cli').disabled = false; }
 }
 async function sendMessage() {
-  if (disconnected || busy(current) || sending) return;
+  if (disconnected || permissionChanging || busy(current) || sending) return;
   const prompt = $('#prompt').value, attachments=current ? pendingAttachments.get(current.id) || [] : [];
   if (!prompt.trim() && !attachments.length) return;
   const source=current, revision=source ? draftRevisions.get(source.id) || 0 : composerRevision, selection=selectionRequest;
@@ -555,7 +610,10 @@ $('#prompt').oninput = () => {
 $('#new-dialog').addEventListener('close', () => sendAfterCreate = false);
 $('#feed').onscroll = updateScrollButton;
 $('#scroll-bottom').onclick = () => { $('#feed').scrollTop = $('#feed').scrollHeight; updateScrollButton(); };
-if ('ResizeObserver' in window) new ResizeObserver(() => requestAnimationFrame(updateScrollButton)).observe($('#messages'));
+if ('ResizeObserver' in window) {
+  const observer=new ResizeObserver(() => requestAnimationFrame(updateScrollButton));
+  observer.observe($('#messages')); observer.observe($('#feed'));
+}
 document.addEventListener('click', event => {
   const localPath=event.target.closest('.local-path');
   if (localPath) { event.preventDefault(); if (current) attempt(async()=>{await api.reveal({id:current.id,path:localPath.dataset.path});toast('已在文件管理器中定位');}); return; }
@@ -598,4 +656,5 @@ async function initialize() {
     toast(error.message);
   }
 }
+initializePermissionSelector();
 initialize();

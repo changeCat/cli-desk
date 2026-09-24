@@ -178,7 +178,7 @@ async fn desk_request(
             }
             reply
         }
-        "get" | "create" | "rename" | "model" | "draft" | "attach" | "stop" | "answer"
+        "get" | "create" | "rename" | "model" | "permission" | "draft" | "attach" | "stop" | "answer"
         | "settings" | "check" | "updateCheck" | "archives" | "restore" => {
             backend.request(&app, &method, payload).await
         }

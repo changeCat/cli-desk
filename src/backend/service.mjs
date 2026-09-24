@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Store } from '../core/store.mjs';
+import { validatePermissionMode } from '../core/permissions.mjs';
 import { createClaudeProvider } from '../providers/claude.mjs';
 
 export function text(value, max = 100000) {
@@ -95,6 +96,13 @@ export function createService({root, version, smoke = false, emit, fetcher = glo
       const s = store.get(text(id, 80));
       if (['running','waiting','stopping'].includes(s.status)) throw new Error('请等待当前任务结束后再修改模型');
       s.model = text(model, 150).trim(); store.save(s); emit('list', store.list()); return s;
+    },
+    permission: ({id, mode, confirmed}) => {
+      const s=store.get(text(id,80)); validatePermissionMode(mode);
+      if (['running','waiting','stopping'].includes(s.status)) throw new Error('请等待当前任务结束或停止后再修改审批模式');
+      if (mode==='bypassPermissions' && confirmed!==true) throw new Error('启用完全访问权限前需要明确确认');
+      const next={...s,permissionMode:mode,activePermissionMode:null}; store.save(next);
+      Object.assign(s,next); emit('session',s); emit('list',store.list()); return s;
     },
     delete: id => { store.remove(text(id, 80)); emit('list', store.list()); return true; },
     archives: () => store.archives(),

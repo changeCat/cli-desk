@@ -7,7 +7,7 @@ const ready = Promise.all([
   listen('desk:event', event => dispatch(event.payload)),
   getCurrentWebview().onDragDropEvent(event => dispatch({type:'fileDrag',data:event.payload}))
 ]);
-const methods = ['state','get','create','rename','model','delete','archives','restore','purge','draft','attach','send','stop','answer','folder','files','cli','settings','check','copy','export','data','openCwd','reveal','link','updateCheck'];
+const methods = ['state','get','create','rename','model','permission','delete','archives','restore','purge','draft','attach','send','stop','answer','folder','files','cli','settings','check','copy','export','data','openCwd','reveal','link','updateCheck'];
 export const desk = Object.fromEntries(methods.map(method => [method, async payload => {
   await ready;
   try { return await invoke('desk_request', {method,payload:payload ?? null}); }

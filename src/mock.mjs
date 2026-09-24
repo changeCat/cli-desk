@@ -7,10 +7,17 @@ export function fakeQuery({ prompt, options }) {
   const delay = () => new Promise(r => setTimeout(r, 100));
   const iterator = (async function* () {
     const session_id = options.resume || 'mock-session-' + Date.now();
-    yield { type:'system', subtype:'init', session_id };
     // Explicit silent-provider fixture for the live status and cancellation UI.
     let input=''; if (prompt) for await (const item of prompt) input+=item.message.content;
+    // Simulates mode routing only; this fixture does not implement Claude's classifier.
+    const mode=input==='[fixture:auto-unavailable]' ? 'default' : options.permissionMode || 'default';
+    yield { type:'system', subtype:'init', session_id, permissionMode:mode };
     if (input==='[fixture:error]') throw new Error('fixture: 模拟请求失败');
+    if (input==='[fixture:question]') {
+      const response=await options.canUseTool('AskUserQuestion',{questions:[{question:'fixture 选择语言？',options:[{label:'中文'}]}]},{signal:options.abortController.signal});
+      if(stopped || options.abortController.signal.aborted)throw new Error('aborted');
+      yield {type:'result',subtype:'success',is_error:false,session_id,result:response.behavior==='allow'?'fixture 已收到回答':'fixture 未回答'};return;
+    }
     if (input==='[fixture:quiet]') {
       const signal=options.abortController.signal;
       await new Promise(resolve=>{
@@ -28,7 +35,7 @@ export function fakeQuery({ prompt, options }) {
     }
     const tool={id:'mock-tool-'+Date.now(),type:'tool_use',name:'Write',input:{file_path:'example.txt',content:'经过确认后写入'}};
     yield {type:'stream_event',session_id,event:{type:'content_block_start',content_block:tool}};
-    const approved = await options.canUseTool(tool.name,tool.input,{ signal:options.abortController.signal });
+    const approved = ['auto','bypassPermissions'].includes(mode) && input!=='[fixture:forced-approval]' ? {behavior:'allow'} : await options.canUseTool(tool.name,tool.input,{ signal:options.abortController.signal });
     if (stopped || options.abortController.signal.aborted) throw new Error('aborted');
     yield {type:'user',session_id,message:{content:[{type:'tool_result',tool_use_id:tool.id,is_error:approved.behavior!=='allow',content:approved.behavior==='allow'?'已写入':'已拒绝'}]}};
     const generated=path.join(options.cwd,'example.txt');

@@ -11,7 +11,7 @@
     "start": "node scripts/tauri.mjs dev",
     "test": "node --test test/*.test.mjs",
     "test:rust": "node scripts/tauri.mjs test",
-    "test:ui": "node test/ui.mjs && node test/ui-resilience.mjs",
+    "test:ui": "node test/ui.mjs && node test/ui-resilience.mjs && node test/ui-permissions.mjs",
     "package": "node scripts/package.mjs",
     "test:packaged": "node scripts/tauri.mjs build --no-bundle --config src-tauri/tauri.test.conf.json && node test/packaged.mjs",
     "verify:installer": "npm test && npm run build && npm run test:rust && node scripts/tauri.mjs build --debug --no-bundle --config src-tauri/tauri.test.conf.json && npm run test:ui && npm run package && npm run test:packaged && node scripts/checksums.mjs",
